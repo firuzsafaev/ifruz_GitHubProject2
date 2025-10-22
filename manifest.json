@@ -9,7 +9,7 @@
   "environment": {
     "platform": "x86_64-unknown-linux-gnu",
     "r": {
-      "requires": "4.0.0"
+      "requires": "4.1.1"
     }
   },
   "icons": [
