@@ -1,14 +1,10 @@
 {
   "version": 1,
-  "locale": "en_US.UTF-8", 
   "metadata": {
     "appmode": "shiny",
     "entrypoint": "app.R"
   },
-  "platform": {
-    "version": "4.2.3",
-    "distribution": "ubuntu-20.04"
-  },
-  "packages": {},
-  "environment": {}
+  "r": {
+    "version": "4.3.0"
+  }
 }
