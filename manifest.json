@@ -1,10 +1,27 @@
 {
-  "version": 1,
-  "metadata": {
-    "appmode": "shiny",
-    "entrypoint": "app.R"
-  },
-  "r": {
-    "version": "4.3.0"
-  }
+    "name": "MyPositConnectCloudApp_Project2Release1",
+    "short_name": "Project2Release1",
+    "description": "A sample web application",
+    "start_url": "/",
+    "display": "standalone",
+    "background_color": "#ffffff",
+    "theme_color": "#000000",
+    "environment": {
+        "platform": "x86_64-unknown-linux-gnu",
+        "r": {
+            "requires": "4.1.0"
+        }
+    },
+    "icons": [
+        {
+            "src": "icon-192.png",
+            "sizes": "192x192",
+            "type": "image/png"
+        },
+        {
+            "src": "icon-512.png",
+            "sizes": "512x512",
+            "type": "image/png"
+        }
+    ]
 }
