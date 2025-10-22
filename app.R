@@ -11,6 +11,11 @@ library(DBI)
 library(RPostgres)
 library(httr)
 library(jsonlite)
+library(rmarkdown)
+library(knitr)
+library(jsonlite)
+library(htmltools)
+library(httpuv)
 
 # Database connection setup
 get_db_connection <- function() {
