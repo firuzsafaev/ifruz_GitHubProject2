@@ -1,4 +1,3 @@
-
 {
   "name": "MyPositConnectCloudApp_Project2Release1",
   "short_name": "Project2Release1",
@@ -9,9 +8,9 @@
   "theme_color": "#000000",
   "environment": {
     "r": {
-        "requires": "4.5.1" 
+      "requires": "4.5"
     }
-},
+  },
   "icons": [
     {
       "src": "icon-192.png",
