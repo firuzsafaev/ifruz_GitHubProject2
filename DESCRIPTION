@@ -1,0 +1,10 @@
+Package: YourAppName
+Type: Package
+Version: 0.1.0
+Depends: R (>= 4.0.0)
+Imports:
+    shiny,
+    rmarkdown,
+    knitr,
+    jsonlite,
+    htmltools
