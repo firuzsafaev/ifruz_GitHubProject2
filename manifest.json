@@ -7,7 +7,7 @@
   "background_color": "#ffffff",
   "theme_color": "#000000",
   "environment": {
-    "platform": "x86_64-unknown-linux-gnu",  // Added platform field
+    "platform": "x86_64-unknown-linux-gnu",
     "r": {
       "requires": "4.0.0"
     }
