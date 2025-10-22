@@ -1,31 +1,26 @@
 {
-  "name": "connect-cloud-app",
-  "version": "1.0.0",
-  "description": "Integration for syncing data via Connect Cloud.",
-  "schema_version": "1.0",
-  "publisher": "Your Company",
-  "main": "index.js",
-  "icon": "assets/icon.png",
-  "capabilities": [
-    "api-actions",
-    "webhooks",
-    "scheduled-triggers"
-  ],
-  "configuration": {
-    "auth_type": "oauth2",
-    "fields": {
-      "client_id": {
-        "type": "string",
-        "required": true
-      },
-      "client_secret": {
-        "type": "string",
-        "required": true
-      },
-      "token_url": {
-        "type": "string",
-        "required": true
-      }
+  "name": "My Posit Connect Cloud App - Project 2 Release 1",
+  "short_name": "Project2 R1",
+  "description": "A sample web application built for Posit Cloud",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#000000",
+  "orientation": "any",
+  "scope": "/",
+  "categories": ["productivity", "utilities"],
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
     }
-  }
+  ]
 }
