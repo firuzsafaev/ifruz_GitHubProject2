@@ -9,7 +9,7 @@
   "theme_color": "#000000",
   "environment": {
     "r": {
-        "requires": ">=4.0.0,<5.0" 
+        "requires": "4.5.1" 
     }
 },
   "icons": [
