@@ -32,6 +32,8 @@
         "devtools",
         "generics",
         "gitcreds",
+        "htmltools",
+        "httpuv",
         "jsonlite",
         "jsonvalidate",
         "knitr",
