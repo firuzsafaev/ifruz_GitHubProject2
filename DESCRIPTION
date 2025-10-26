@@ -3,8 +3,7 @@ Type: Package
 Version: 0.1.0
 Depends: R (>= 4.0.0)
 Imports:
-    shiny,
-    rmarkdown,
-    knitr,
-    jsonlite,
-    htmltools
+BiocManager, cli, compiler, covr, cpp11, devtools, generics,
+        gitcreds, jsonlite, jsonvalidate, knitr, miniUI, modules,
+        packrat, pak, R6, remotes, reticulate, rmarkdown, rstudioapi,
+        shiny, testthat, uuid, waldo, yaml, webfakes
