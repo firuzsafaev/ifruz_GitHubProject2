@@ -16,6 +16,7 @@ library(knitr)
 library(jsonlite)
 library(htmltools)
 library(httpuv)
+library(rsconnect)
 
 # Database connection setup
 get_db_connection <- function() {
