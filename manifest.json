@@ -1,29 +1,7 @@
 {
-    "version": 1,
-    "locale": "en_US.UTF-8",
-    "metadata": {
-        "appmode": "shiny",
-        "entrypoint": "app.R"
-    },
-    "platform": "4.3.0",
-    "packages": {},
-    "name": "MyPositConnectCloudApp_Project2Release1",
-    "short_name": "Project2Release1", 
-    "description": "A Shiny web application",
-    "start_url": "/",
-    "display": "standalone",
-    "background_color": "#ffffff",
-    "theme_color": "#000000",
-    "icons": [
-        {
-            "src": "icon-192.png",
-            "sizes": "192x192",
-            "type": "image/png"
-        },
-        {
-            "src": "icon-512.png",
-            "sizes": "512x512",
-            "type": "image/png"
-        }
-    ]
+  "name": "MyPositConnectCloudApp_Project2Release1",
+  "version": "1.0.0",
+  "description": "App created via RStudio",
+  "manifest_version": 3,
+  "author": "firuzsafaev"
 }
