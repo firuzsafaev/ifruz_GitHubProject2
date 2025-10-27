@@ -22,8 +22,6 @@
       "BugReports": "https://github.com/rstudio/renv/issues",
       "Imports": [
         "utils"
-      ],
-      "Suggests": [
 "shiny",
 "shinydashboard",
 "rhandsontable",
@@ -42,6 +40,13 @@
 "htmltools",
 "httpuv",
 "rsconnect"
+      ],
+      "Suggests": [
+"BiocManager", "cli", "compiler", "covr", 
+"cpp11", "devtools", "generics", "gitcreds", 
+"miniUI", "modules", "packrat", "pak", "R6",
+"remotes", "reticulate", "rstudioapi", "testthat",
+"uuid", "waldo", "yaml", "webfakes"
       ],
       "Encoding": "UTF-8",
       "RoxygenNote": "7.3.2",
