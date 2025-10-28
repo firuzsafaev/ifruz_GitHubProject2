@@ -1,26 +1,24 @@
-Package: your-shiny-app-name
+Package: "ifruz_GitHubProject2"
 Type: Package
-Title: Your Shiny Application
+Title: trialApp6
 Version: 1.0.0
 Depends: R (>= 4.0.0)
 Imports: 
-    shiny,
-    shinydashboard,
-    rhandsontable,
-    data.table,
-    dplyr,
-    lubridate,
-    shinyalert,
-    openxlsx,
-    DBI,
-    RPostgres,
-    httr,
-    jsonlite,
-    rmarkdown,
-    knitr,
-    htmltools,
-    httpuv,
-    rsconnect
+    shiny (>= 1.7.0),
+    shinydashboard (>= 0.7.2),
+    rhandsontable (>= 0.3.8),
+    data.table (>= 1.14.0),
+    dplyr (>= 1.0.0),
+    lubridate (>= 1.8.0),
+    shinyalert (>= 3.0.0),
+    openxlsx (>= 4.2.0),
+    DBI (>= 1.1.0),
+    RPostgres (>= 1.4.0),
+    httr (>= 1.4.0),
+    jsonlite (>= 1.7.0)
+Suggests:
+    rmarkdown (>= 2.10),
+    knitr (>= 1.30)
 Description: Your Shiny application description goes here.
 License: MIT + file LICENSE
 Encoding: UTF-8
