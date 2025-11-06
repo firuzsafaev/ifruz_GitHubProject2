@@ -12,8 +12,8 @@ library(DBI)
 library(RPostgres)
 library(pool)
 library(rsconnect)
-library(httr)  # Added for API calls
-library(jsonlite)  # Added for JSON parsing
+library(httr)
+library(jsonlite)
 
 # Database connection function using environment variables
 connect_to_neon <- function() {
@@ -93,13 +93,13 @@ initialize_database <- function() {
   dbDisconnect(con)
 }
 
-# Save data to Neon
+# Enhanced save data to Neon with automatic persistence
 save_data_to_neon <- function(data, table_name, session_id) {
   tryCatch({
     con <- connect_to_neon()
     
     if (table_name == "app_data_6120") {
-      # Clear previous session data
+      # Clear previous session data for this specific session
       dbExecute(con, paste("DELETE FROM app_data_6120 WHERE session_id = $1"), list(session_id))
       
       # Insert new data
@@ -146,36 +146,64 @@ save_data_to_neon <- function(data, table_name, session_id) {
   })
 }
 
-# Load data from Neon
-load_data_from_neon <- function(table_name, session_id) {
+# Enhanced load data from Neon with persistent session management
+load_data_from_neon <- function(table_name, session_id = NULL) {
   tryCatch({
     con <- connect_to_neon()
     
-    if (table_name == "app_data_6120") {
-      result <- dbGetQuery(con, 
-        "SELECT account_name, initial_balance, debit, credit, final_balance 
-         FROM app_data_6120 
-         WHERE session_id = $1 
-         ORDER BY id", 
-        list(session_id))
-    } else if (table_name == "app_data_6120_1") {
-      result <- dbGetQuery(con,
-        "SELECT operation_date, document_number, income_account, dividend_period, 
-                operation_description, accounting_method, initial_balance, credit, debit,
-                correspondence_debit, correspondence_credit, final_balance
-         FROM app_data_6120_1 
-         WHERE session_id = $1 
-         ORDER BY id",
-        list(session_id))
-    } else if (table_name == "app_data_6120_2") {
-      result <- dbGetQuery(con,
-        "SELECT operation_date, document_number, income_account, dividend_period, 
-                operation_description, accounting_method, initial_balance, credit, debit,
-                correspondence_debit, correspondence_credit, final_balance
-         FROM app_data_6120_2 
-         WHERE session_id = $1 
-         ORDER BY id",
-        list(session_id))
+    # If no session_id provided, load the most recent data
+    if (is.null(session_id)) {
+      if (table_name == "app_data_6120") {
+        result <- dbGetQuery(con, 
+          "SELECT account_name, initial_balance, debit, credit, final_balance 
+           FROM app_data_6120 
+           WHERE session_id IN (SELECT session_id FROM app_data_6120 ORDER BY created_at DESC LIMIT 1)
+           ORDER BY id")
+      } else if (table_name == "app_data_6120_1") {
+        result <- dbGetQuery(con,
+          "SELECT operation_date, document_number, income_account, dividend_period, 
+                  operation_description, accounting_method, initial_balance, credit, debit,
+                  correspondence_debit, correspondence_credit, final_balance
+           FROM app_data_6120_1 
+           WHERE session_id IN (SELECT session_id FROM app_data_6120_1 ORDER BY created_at DESC LIMIT 1)
+           ORDER BY id")
+      } else if (table_name == "app_data_6120_2") {
+        result <- dbGetQuery(con,
+          "SELECT operation_date, document_number, income_account, dividend_period, 
+                  operation_description, accounting_method, initial_balance, credit, debit,
+                  correspondence_debit, correspondence_credit, final_balance
+           FROM app_data_6120_2 
+           WHERE session_id IN (SELECT session_id FROM app_data_6120_2 ORDER BY created_at DESC LIMIT 1)
+           ORDER BY id")
+      }
+    } else {
+      # Load data for specific session_id
+      if (table_name == "app_data_6120") {
+        result <- dbGetQuery(con, 
+          "SELECT account_name, initial_balance, debit, credit, final_balance 
+           FROM app_data_6120 
+           WHERE session_id = $1 
+           ORDER BY id", 
+          list(session_id))
+      } else if (table_name == "app_data_6120_1") {
+        result <- dbGetQuery(con,
+          "SELECT operation_date, document_number, income_account, dividend_period, 
+                  operation_description, accounting_method, initial_balance, credit, debit,
+                  correspondence_debit, correspondence_credit, final_balance
+           FROM app_data_6120_1 
+           WHERE session_id = $1 
+           ORDER BY id",
+          list(session_id))
+      } else if (table_name == "app_data_6120_2") {
+        result <- dbGetQuery(con,
+          "SELECT operation_date, document_number, income_account, dividend_period, 
+                  operation_description, accounting_method, initial_balance, credit, debit,
+                  correspondence_debit, correspondence_credit, final_balance
+           FROM app_data_6120_2 
+           WHERE session_id = $1 
+           ORDER BY id",
+          list(session_id))
+      }
     }
     
     dbDisconnect(con)
@@ -186,80 +214,103 @@ load_data_from_neon <- function(table_name, session_id) {
   })
 }
 
+# Get all available sessions for data retrieval
+get_available_sessions <- function() {
+  tryCatch({
+    con <- connect_to_neon()
+    sessions <- dbGetQuery(con, 
+      "SELECT DISTINCT session_id, MAX(created_at) as last_updated 
+       FROM (
+         SELECT session_id, created_at FROM app_data_6120
+         UNION ALL 
+         SELECT session_id, created_at FROM app_data_6120_1
+         UNION ALL 
+         SELECT session_id, created_at FROM app_data_6120_2
+       ) AS combined 
+       GROUP BY session_id 
+       ORDER BY last_updated DESC")
+    dbDisconnect(con)
+    return(sessions$session_id)
+  }, error = function(e) {
+    message("Error getting sessions: ", e$message)
+    return(NULL)
+  })
+}
+
 #ОСВ: 6120
 
 DF6120 <- data.table(
-		"Счет (субчет)" = as.character(c("6120.1.Доходы по дивидендам, отражаемые в составе прибыли и убытка",
-						"6120.2.Доходы по дивидендам, отражаемые в Прочем совокупном доходе",
-						"Итого")),	
-		"Сальдо начальное" = as.numeric(c(0)),
-		"Дебет" = as.numeric(c(0)),
-		"Кредит" = as.numeric(c(0)),
-		"Сальдо конечное" = as.numeric(c(0)),
-		stringsAsFactors = FALSE)
+    "Счет (субчет)" = as.character(c("6120.1.Доходы по дивидендам, отражаемые в составе прибыли и убытка",
+                    "6120.2.Доходы по дивидендам, отражаемые в Прочем совокупном доходе",
+                    "Итого")),	
+    "Сальдо начальное" = as.numeric(c(0)),
+    "Дебет" = as.numeric(c(0)),
+    "Кредит" = as.numeric(c(0)),
+    "Сальдо конечное" = as.numeric(c(0)),
+    stringsAsFactors = FALSE)
 
 #6120.1.Доходы по дивидендам, отражаемые в составе прибыли и убытка
 
 DF6120.1 <- data.table(
-      		"Дата операции" = as.character(NA),
-      		"Номер первичного документа" = as.character(NA),
-      		"Счет № статьи дохода" = as.character(NA),
-      		"Период, к которому относятся дивиденды" = as.character(NA),
-      		"Содержание операции" = as.character(NA),
-      		"Метод учета" = as.character(NA),
-      		"Сальдо начальное" = as.numeric(NA),				#row 7
-      		"Кредит" = as.numeric(NA),					#row 8 
-      		"Дебет" = as.numeric(NA),					#row 9
-     		"Корреспонденция счетов: Счет № (дебет)" = as.character(NA),
-      		"Корреспонденция счетов: Счет № (кредит)" = as.character(NA),
-      		"Сальдо конечное" = as.numeric(NA),
+          "Дата операции" = as.character(NA),
+          "Номер первичного документа" = as.character(NA),
+          "Счет № статьи дохода" = as.character(NA),
+          "Период, к которому относятся дивиденды" = as.character(NA),
+          "Содержание операции" = as.character(NA),
+          "Метод учета" = as.character(NA),
+          "Сальдо начальное" = as.numeric(NA),				#row 7
+          "Кредит" = as.numeric(NA),					#row 8 
+          "Дебет" = as.numeric(NA),					#row 9
+         "Корреспонденция счетов: Счет № (дебет)" = as.character(NA),
+          "Корреспонденция счетов: Счет № (кредит)" = as.character(NA),
+          "Сальдо конечное" = as.numeric(NA),
                 stringsAsFactors = FALSE)
 
 DF6120.1_2 <- data.table(
-      		"Дата операции" = as.character(NA),
-      		"Номер первичного документа" = as.character(NA),
-      		"Счет № статьи дохода" = as.character(NA),
-      		"Период, к которому относятся дивиденды" = as.character(NA),
-      		"Содержание операции" = as.character(NA),
-      		"Метод учета" = as.character(NA),
-      		"Сальдо начальное" = as.numeric(NA),
-      		"Кредит" = as.numeric(NA),
-      		"Дебет" = as.numeric(NA),
-     		"Корреспонденция счетов: Счет № (дебет)" = as.character(NA),
-      		"Корреспонденция счетов: Счет № (кредит)" = as.character(NA),
-      		"Сальдо конечное" = as.numeric(NA),
+          "Дата операции" = as.character(NA),
+          "Номер первичного документа" = as.character(NA),
+          "Счет № статьи дохода" = as.character(NA),
+          "Период, к которому относятся дивиденды" = as.character(NA),
+          "Содержание операции" = as.character(NA),
+          "Метод учета" = as.character(NA),
+          "Сальдо начальное" = as.numeric(NA),
+          "Кредит" = as.numeric(NA),
+          "Дебет" = as.numeric(NA),
+         "Корреспонденция счетов: Счет № (дебет)" = as.character(NA),
+          "Корреспонденция счетов: Счет № (кредит)" = as.character(NA),
+          "Сальдо конечное" = as.numeric(NA),
                 stringsAsFactors = FALSE)
 
 #6120.2.Доходы по дивидендам, отражаемые в Прочем совокупном доходе
 
 DF6120.2 <- data.table(
-      		"Дата операции" = as.character(NA),
-      		"Номер первичного документа" = as.character(NA),
-      		"Счет № статьи дохода" = as.character(NA),
-      		"Период, к которому относятся дивиденды" = as.character(NA),
-      		"Содержание операции" = as.character(NA),
-      		"Метод учета" = as.character(NA),
-      		"Сальдо начальное" = as.numeric(NA),				#row 7
-      		"Кредит" = as.numeric(NA),					#row 8 
-      		"Дебет" = as.numeric(NA),					#row 9
-     		"Корреспонденция счетов: Счет № (дебет)" = as.character(NA),
-      		"Корреспонденция счетов: Счет № (кредит)" = as.character(NA),
-      		"Сальдо конечное" = as.numeric(NA),
+          "Дата операции" = as.character(NA),
+          "Номер первичного документа" = as.character(NA),
+          "Счет № статьи дохода" = as.character(NA),
+          "Период, к которому относятся дивиденды" = as.character(NA),
+          "Содержание операции" = as.character(NA),
+          "Метод учета" = as.character(NA),
+          "Сальдо начальное" = as.numeric(NA),				#row 7
+          "Кредит" = as.numeric(NA),					#row 8 
+          "Дебет" = as.numeric(NA),					#row 9
+         "Корреспонденция счетов: Счет № (дебет)" = as.character(NA),
+          "Корреспонденция счетов: Счет № (кредит)" = as.character(NA),
+          "Сальдо конечное" = as.numeric(NA),
                 stringsAsFactors = FALSE)
 
 DF6120.2_2 <- data.table(
-      		"Дата операции" = as.character(NA),
-      		"Номер первичного документа" = as.character(NA),
-      		"Счет № статьи дохода" = as.character(NA),
-      		"Период, к которому относятся дивиденды" = as.character(NA),
-      		"Содержание операции" = as.character(NA),
-      		"Метод учета" = as.character(NA),
-      		"Сальдо начальное" = as.numeric(NA),
-      		"Кредит" = as.numeric(NA),
-      		"Дебет" = as.numeric(NA),
-     		"Корреспонденция счетов: Счет № (дебет)" = as.character(NA),
-      		"Корреспонденция счетов: Счет № (кредит)" = as.character(NA),
-      		"Сальдо конечное" = as.numeric(NA),
+          "Дата операции" = as.character(NA),
+          "Номер первичного документа" = as.character(NA),
+          "Счет № статьи дохода" = as.character(NA),
+          "Период, к которому относятся дивиденды" = as.character(NA),
+          "Содержание операции" = as.character(NA),
+          "Метод учета" = as.character(NA),
+          "Сальдо начальное" = as.numeric(NA),
+          "Кредит" = as.numeric(NA),
+          "Дебет" = as.numeric(NA),
+         "Корреспонденция счетов: Счет № (дебет)" = as.character(NA),
+          "Корреспонденция счетов: Счет № (кредит)" = as.character(NA),
+          "Сальдо конечное" = as.numeric(NA),
                 stringsAsFactors = FALSE)
 
 ui <- fluidPage(
@@ -276,7 +327,7 @@ ui <- fluidPage(
               menuItem("6110.Доходы по финансовым активам", tabName = "Prft6110"),
               menuItem("6120.Доходы по дивидендам", tabName = "Prft6120",
                 menuSubItem("Оборотно-сальдовая ведомость", tabName = "table6120"),
-		menuSubItem("6120.1.Доходы по дивидендам, отражаемые в составе прибыли и убытка", tabName = "table6120_1"),
+        menuSubItem("6120.1.Доходы по дивидендам, отражаемые в составе прибыли и убытка", tabName = "table6120_1"),
                 menuSubItem("6120.2.Доходы по дивидендам, отражаемые в Прочем совокупном доходе", tabName = "table6120_2"))
             )
           )
@@ -298,7 +349,17 @@ ui <- fluidPage(
       '),
       tabItems(
         tabItem(tabName = "home",
-                h2("Welcome to the Home Page")
+                h2("Welcome to the Home Page"),
+                fluidRow(
+                  box(width = 12, title = "Data Management",
+                      selectInput("session_selector", "Select Session to Load:", choices = NULL),
+                      actionButton("load_session_btn", "Load Selected Session"),
+                      actionButton("save_session_btn", "Save Current Session"),
+                      actionButton("new_session_btn", "Start New Session"),
+                      br(),
+                      textOutput("current_session_info")
+                  )
+                )
         ),
         tabItem(tabName = "table6120",
           fluidRow(
@@ -310,9 +371,9 @@ ui <- fluidPage(
             column(
               width = 12, br(),
               tags$b("ОСВ: 6120.Доходы по дивидендам"),
-	      tags$div(style = "margin-bottom: 20px;"),
+          tags$div(style = "margin-bottom: 20px;"),
               rHandsontableOutput("table6120Item1"),
-	      downloadButton("download_df6120", "Загрузить данные"))
+          downloadButton("download_df6120", "Загрузить данные"))
           )
         ),
         tabItem(tabName = "table6120_1",
@@ -320,27 +381,27 @@ ui <- fluidPage(
             column(
               width = 12, br(),
               tags$b("Журнал учета хозопераций: 6120.1.Доходы по дивидендам, отражаемые в составе прибыли и убытка"),
-	      tags$div(style = "margin-bottom: 20px;"),
+          tags$div(style = "margin-bottom: 20px;"),
               rHandsontableOutput("table6120.1Item1"),
-	      downloadButton("download_df6120.1", "Загрузить данные")
+          downloadButton("download_df6120.1", "Загрузить данные")
             ),
             column(
               width = 12, br(),
               tags$b("Выборка данных по дате операции, номеру первичного документа или статье дохода"),
-	      tags$div(style = "margin-bottom: 20px;"),
+          tags$div(style = "margin-bottom: 20px;"),
               selectInput("choices6120.1", label=NULL,
                           choices = c(	"Выбор по дате операции", 
-					"Выбор по номеру первичного документа", 
-					"Выбор по статье дохода", 
-					"Выбор по дате операции и номеру первичного документа", 
-					"Выбор по дате операции и статье дохода")),
+                    "Выбор по номеру первичного документа", 
+                    "Выбор по статье дохода", 
+                    "Выбор по дате операции и номеру первичного документа", 
+                    "Выбор по дате операции и статье дохода")),
               uiOutput("nested_ui6120.1")
             ),
             column(
               width = 12, br(),
               label=NULL,
               rHandsontableOutput("table6120.1Item2"),
-	      downloadButton("download_df6120.1_2", "Загрузить данные"))
+          downloadButton("download_df6120.1_2", "Загрузить данные"))
           )
         ),
         tabItem(tabName = "table6120_2",
@@ -348,27 +409,27 @@ ui <- fluidPage(
             column(
               width = 12, br(),
               tags$b("Журнал учета хозопераций: 6120.2.Доходы по дивидендам, отражаемые в Прочем совокупном доходе"),
-	      tags$div(style = "margin-bottom: 20px;"),
+          tags$div(style = "margin-bottom: 20px;"),
               rHandsontableOutput("table6120.2Item1"),
-	      downloadButton("download_df6120.2", "Загрузить данные")
+          downloadButton("download_df6120.2", "Загрузить данные")
             ),
             column(
               width = 12, br(),
               tags$b("Выборка данных по дате операции, номеру первичного документа или статье дохода"),
-	      tags$div(style = "margin-bottom: 20px;"),
+          tags$div(style = "margin-bottom: 20px;"),
               selectInput("choices6120.2", label=NULL,
                           choices = c(	"Выбор по дате операции", 
-					"Выбор по номеру первичного документа", 
-					"Выбор по статье дохода", 
-					"Выбор по дате операции и номеру первичного документа", 
-					"Выбор по дате операции и статье дохода")),
+                    "Выбор по номеру первичного документа", 
+                    "Выбор по статье дохода", 
+                    "Выбор по дате операции и номеру первичного документа", 
+                    "Выбор по дате операции и статье дохода")),
               uiOutput("nested_ui6120.2")
             ),
             column(
               width = 12, br(),
               label=NULL,
               rHandsontableOutput("table6120.2Item2"),
-	      downloadButton("download_df6120.2_2", "Загрузить данные"))
+          downloadButton("download_df6120.2_2", "Загрузить данные"))
            )
          )
        )
@@ -377,8 +438,8 @@ ui <- fluidPage(
  )
 
 server = function(input, output, session) {
-  # Generate a unique session ID
-  session_id <- paste0("session_", as.integer(Sys.time()), "_", sample(1000:9999, 1))
+  # Generate a unique session ID that persists
+  session_id <- reactiveVal(paste0("session_", as.integer(Sys.time()), "_", sample(1000:9999, 1)))
   
   # Initialize database on app start
   initialize_database()
@@ -390,26 +451,97 @@ server = function(input, output, session) {
  
   data <- reactiveValues()
 
-  # Load data from Neon on app start
+  # Update session selector
   observe({
-    # Load main table
-    neon_data_6120 <- load_data_from_neon("app_data_6120", session_id)
+    sessions <- get_available_sessions()
+    if (!is.null(sessions)) {
+      updateSelectInput(session, "session_selector", choices = c("", sessions))
+    }
+  })
+  
+  # Load selected session
+  observeEvent(input$load_session_btn, {
+    if (!is.null(input$session_selector) && input$session_selector != "") {
+      selected_session <- input$session_selector
+      
+      # Load data for selected session
+      neon_data_6120 <- load_data_from_neon("app_data_6120", selected_session)
+      if (!is.null(neon_data_6120) && nrow(neon_data_6120) > 0) {
+        data$df6120 <- as.data.table(neon_data_6120)
+      }
+      
+      neon_data_6120_1 <- load_data_from_neon("app_data_6120_1", selected_session)
+      if (!is.null(neon_data_6120_1) && nrow(neon_data_6120_1) > 0) {
+        data$df6120.1 <- as.data.table(neon_data_6120_1)
+      }
+      
+      neon_data_6120_2 <- load_data_from_neon("app_data_6120_2", selected_session)
+      if (!is.null(neon_data_6120_2) && nrow(neon_data_6120_2) > 0) {
+        data$df6120.2 <- as.data.table(neon_data_6120_2)
+      }
+      
+      session_id(selected_session)
+      shinyalert("Success", paste("Loaded session:", selected_session), type = "success")
+    }
+  })
+  
+  # Save current session
+  observeEvent(input$save_session_btn, {
+    if (!is.null(data$df6120)) {
+      save_data_to_neon(data$df6120, "app_data_6120", session_id())
+    }
+    if (!is.null(data$df6120.1)) {
+      save_data_to_neon(data$df6120.1, "app_data_6120_1", session_id())
+    }
+    if (!is.null(data$df6120.2)) {
+      save_data_to_neon(data$df6120.2, "app_data_6120_2", session_id())
+    }
+    shinyalert("Success", paste("Session saved:", session_id()), type = "success")
+    # Update session list
+    sessions <- get_available_sessions()
+    if (!is.null(sessions)) {
+      updateSelectInput(session, "session_selector", choices = c("", sessions))
+    }
+  })
+  
+  # Create new session
+  observeEvent(input$new_session_btn, {
+    new_id <- paste0("session_", as.integer(Sys.time()), "_", sample(1000:9999, 1))
+    session_id(new_id)
+    
+    # Reset data to default
+    data$df6120 <- as.data.table(DF6120)
+    data$df6120.1 <- as.data.table(DF6120.1)
+    data$df6120.2 <- as.data.table(DF6120.2)
+    data$df6120.1_2 <- as.data.table(DF6120.1_2)
+    data$df6120.2_2 <- as.data.table(DF6120.2_2)
+    
+    shinyalert("New Session", paste("Started new session:", new_id), type = "info")
+  })
+  
+  # Display current session info
+  output$current_session_info <- renderText({
+    paste("Current Session ID:", session_id())
+  })
+
+  # Load most recent data on app start
+  observe({
+    # Try to load the most recent data
+    neon_data_6120 <- load_data_from_neon("app_data_6120")
     if (!is.null(neon_data_6120) && nrow(neon_data_6120) > 0) {
       data$df6120 <- as.data.table(neon_data_6120)
     } else {
       data$df6120 <- as.data.table(DF6120)
     }
     
-    # Load 6120.1 table
-    neon_data_6120_1 <- load_data_from_neon("app_data_6120_1", session_id)
+    neon_data_6120_1 <- load_data_from_neon("app_data_6120_1")
     if (!is.null(neon_data_6120_1) && nrow(neon_data_6120_1) > 0) {
       data$df6120.1 <- as.data.table(neon_data_6120_1)
     } else {
       data$df6120.1 <- as.data.table(DF6120.1)
     }
     
-    # Load 6120.2 table
-    neon_data_6120_2 <- load_data_from_neon("app_data_6120_2", session_id)
+    neon_data_6120_2 <- load_data_from_neon("app_data_6120_2")
     if (!is.null(neon_data_6120_2) && nrow(neon_data_6120_2) > 0) {
       data$df6120.2 <- as.data.table(neon_data_6120_2)
     } else {
@@ -421,37 +553,41 @@ server = function(input, output, session) {
     data$df6120.2_2 <- as.data.table(DF6120.2_2)
   })
 
-  # Save data to Neon when tables are modified
+  # Auto-save data when tables are modified with debouncing
+  auto_save_6120 <- debounce(
+    observe({
+      if(!is.null(input$table6120Item1) && !is.null(data$df6120)) {
+        data$df6120 <- hot_to_r(input$table6120Item1)
+        save_data_to_neon(data$df6120, "app_data_6120", session_id())
+      }
+    }), 2000) # 2 second delay
+
+  auto_save_6120_1 <- debounce(
+    observe({
+      if(!is.null(input$table6120.1Item1) && !is.null(data$df6120.1)) {
+        data$df6120.1 <- hot_to_r(input$table6120.1Item1)
+        save_data_to_neon(data$df6120.1, "app_data_6120_1", session_id())
+      }
+    }), 2000)
+
+  auto_save_6120_2 <- debounce(
+    observe({
+      if(!is.null(input$table6120.2Item1) && !is.null(data$df6120.2)) {
+        data$df6120.2 <- hot_to_r(input$table6120.2Item1)
+        save_data_to_neon(data$df6120.2, "app_data_6120_2", session_id())
+      }
+    }), 2000)
+
+  # Initialize data if not already set
   observe({
-    if(!is.null(input$table6120Item1)) {
-      data$df6120 <- hot_to_r(input$table6120Item1)
-      save_data_to_neon(data$df6120, "app_data_6120", session_id)
-    }
+    if (is.null(data$df6120)) data$df6120 <- as.data.table(DF6120)
+    if (is.null(data$df6120.1)) data$df6120.1 <- as.data.table(DF6120.1)
+    if (is.null(data$df6120.2)) data$df6120.2 <- as.data.table(DF6120.2)
+    if (is.null(data$df6120.1_2)) data$df6120.1_2 <- as.data.table(DF6120.1_2)
+    if (is.null(data$df6120.2_2)) data$df6120.2_2 <- as.data.table(DF6120.2_2)
   })
 
-  observe({
-    if(!is.null(input$table6120.1Item1)) {
-      data$df6120.1 <- hot_to_r(input$table6120.1Item1)
-      save_data_to_neon(data$df6120.1, "app_data_6120_1", session_id)
-    }
-  })
-
-  observe({
-    if(!is.null(input$table6120.2Item1)) {
-      data$df6120.2 <- hot_to_r(input$table6120.2Item1)
-      save_data_to_neon(data$df6120.2, "app_data_6120_2", session_id)
-    }
-  })
-
-
-  observe({
-    data$df6120 <- as.data.table(DF6120)
-    data$df6120.1 <- as.data.table(DF6120.1)
-    data$df6120.2 <- as.data.table(DF6120.2)
-    data$df6120.1_2 <- as.data.table(DF6120.1_2)
-    data$df6120.2_2 <- as.data.table(DF6120.2_2)
-  })
-
+#*****************************
   observe({
     if(!is.null(input$table6120Item1))
       data$df6120 <- hot_to_r(input$table6120Item1)
