@@ -1,5 +1,4 @@
 #6120.Доходы по дивидендам
-
 library(shiny)
 library(shinydashboard)
 library(rhandsontable)
@@ -11,134 +10,128 @@ library(openxlsx)
 library(DBI)
 library(RPostgres)
 library(pool)
-library(rsconnect)
-library(httr)
-library(jsonlite)
 
-# Database connection function using environment variables
-connect_to_neon <- function() {
-  con <- dbConnect(
-    RPostgres::Postgres(),
-    host = Sys.getenv("NEON_HOST"),
-    port = as.numeric(Sys.getenv("NEON_PORT")),
-    dbname = Sys.getenv("NEON_DATABASE"),
-    user = Sys.getenv("NEON_USER"),
-    password = Sys.getenv("NEON_PASSWORD"),
-    sslmode = "require"
-  )
-  return(con)
-}
+# Database connection using connection pooling
+pool <- NULL
 
 # Initialize database tables
 initialize_database <- function() {
-  con <- connect_to_neon()
-  
-  # Create tables if they don't exist
-  create_table_sql <- "
-  CREATE TABLE IF NOT EXISTS app_data_6120 (
-    id SERIAL PRIMARY KEY,
-    session_id VARCHAR(255),
-    account_name VARCHAR(500),
-    initial_balance NUMERIC,
-    debit NUMERIC,
-    credit NUMERIC,
-    final_balance NUMERIC,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-  );"
-  
-  create_table_sql_6120_1 <- "
-  CREATE TABLE IF NOT EXISTS app_data_6120_1 (
-    id SERIAL PRIMARY KEY,
-    session_id VARCHAR(255),
-    operation_date DATE,
-    document_number VARCHAR(255),
-    income_account VARCHAR(255),
-    dividend_period VARCHAR(255),
-    operation_description TEXT,
-    accounting_method VARCHAR(255),
-    initial_balance NUMERIC,
-    credit NUMERIC,
-    debit NUMERIC,
-    correspondence_debit VARCHAR(255),
-    correspondence_credit VARCHAR(255),
-    final_balance NUMERIC,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-  );"
-  
-  create_table_sql_6120_2 <- "
-  CREATE TABLE IF NOT EXISTS app_data_6120_2 (
-    id SERIAL PRIMARY KEY,
-    session_id VARCHAR(255),
-    operation_date DATE,
-    document_number VARCHAR(255),
-    income_account VARCHAR(255),
-    dividend_period VARCHAR(255),
-    operation_description TEXT,
-    accounting_method VARCHAR(255),
-    initial_balance NUMERIC,
-    credit NUMERIC,
-    debit NUMERIC,
-    correspondence_debit VARCHAR(255),
-    correspondence_credit VARCHAR(255),
-    final_balance NUMERIC,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-  );"
-  
-  dbExecute(con, create_table_sql)
-  dbExecute(con, create_table_sql_6120_1)
-  dbExecute(con, create_table_sql_6120_2)
-  dbDisconnect(con)
+  tryCatch({
+    if (is.null(pool)) return(FALSE)
+    
+    create_table_sql <- "
+    CREATE TABLE IF NOT EXISTS app_data_6120 (
+      id SERIAL PRIMARY KEY,
+      session_id VARCHAR(255),
+      account_name VARCHAR(500),
+      initial_balance NUMERIC,
+      debit NUMERIC,
+      credit NUMERIC,
+      final_balance NUMERIC,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );"
+    
+    create_table_sql_6120_1 <- "
+    CREATE TABLE IF NOT EXISTS app_data_6120_1 (
+      id SERIAL PRIMARY KEY,
+      session_id VARCHAR(255),
+      operation_date DATE,
+      document_number VARCHAR(255),
+      income_account VARCHAR(255),
+      dividend_period VARCHAR(255),
+      operation_description TEXT,
+      accounting_method VARCHAR(255),
+      initial_balance NUMERIC,
+      credit NUMERIC,
+      debit NUMERIC,
+      correspondence_debit VARCHAR(255),
+      correspondence_credit VARCHAR(255),
+      final_balance NUMERIC,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );"
+    
+    create_table_sql_6120_2 <- "
+    CREATE TABLE IF NOT EXISTS app_data_6120_2 (
+      id SERIAL PRIMARY KEY,
+      session_id VARCHAR(255),
+      operation_date DATE,
+      document_number VARCHAR(255),
+      income_account VARCHAR(255),
+      dividend_period VARCHAR(255),
+      operation_description TEXT,
+      accounting_method VARCHAR(255),
+      initial_balance NUMERIC,
+      credit NUMERIC,
+      debit NUMERIC,
+      correspondence_debit VARCHAR(255),
+      correspondence_credit VARCHAR(255),
+      final_balance NUMERIC,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );"
+    
+    dbExecute(pool, create_table_sql)
+    dbExecute(pool, create_table_sql_6120_1)
+    dbExecute(pool, create_table_sql_6120_2)
+    return(TRUE)
+  }, error = function(e) {
+    message("Database initialization error: ", e$message)
+    return(FALSE)
+  })
 }
 
 # Enhanced save data to Neon with automatic persistence
 save_data_to_neon <- function(data, table_name, session_id) {
   tryCatch({
-    con <- connect_to_neon()
+    if (is.null(pool)) return(FALSE)
     
     if (table_name == "app_data_6120") {
       # Clear previous session data for this specific session
-      dbExecute(con, paste("DELETE FROM app_data_6120 WHERE session_id = $1"), list(session_id))
+      dbExecute(pool, paste("DELETE FROM app_data_6120 WHERE session_id = $1"), list(session_id))
       
       # Insert new data
       for(i in 1:nrow(data)) {
-        dbExecute(con, 
+        dbExecute(pool, 
           "INSERT INTO app_data_6120 (session_id, account_name, initial_balance, debit, credit, final_balance) 
            VALUES ($1, $2, $3, $4, $5, $6)",
-          list(session_id, data[i, 1], data[i, 2], data[i, 3], data[i, 4], data[i, 5])
+          list(session_id, as.character(data[i, 1]), as.numeric(data[i, 2]), as.numeric(data[i, 3]), 
+               as.numeric(data[i, 4]), as.numeric(data[i, 5]))
         )
       }
     } else if (table_name == "app_data_6120_1") {
-      dbExecute(con, paste("DELETE FROM app_data_6120_1 WHERE session_id = $1"), list(session_id))
+      dbExecute(pool, paste("DELETE FROM app_data_6120_1 WHERE session_id = $1"), list(session_id))
       
       for(i in 1:nrow(data)) {
-        dbExecute(con,
+        dbExecute(pool,
           "INSERT INTO app_data_6120_1 (session_id, operation_date, document_number, income_account, 
            dividend_period, operation_description, accounting_method, initial_balance, credit, debit,
            correspondence_debit, correspondence_credit, final_balance)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
-          list(session_id, data[i, 1], data[i, 2], data[i, 3], data[i, 4], data[i, 5], data[i, 6],
-               data[i, 7], data[i, 8], data[i, 9], data[i, 10], data[i, 11], data[i, 12])
+          list(session_id, as.character(data[i, 1]), as.character(data[i, 2]), as.character(data[i, 3]), 
+               as.character(data[i, 4]), as.character(data[i, 5]), as.character(data[i, 6]),
+               as.numeric(data[i, 7]), as.numeric(data[i, 8]), as.numeric(data[i, 9]), 
+               as.character(data[i, 10]), as.character(data[i, 11]), as.numeric(data[i, 12]))
         )
       }
     } else if (table_name == "app_data_6120_2") {
-      dbExecute(con, paste("DELETE FROM app_data_6120_2 WHERE session_id = $1"), list(session_id))
+      dbExecute(pool, paste("DELETE FROM app_data_6120_2 WHERE session_id = $1"), list(session_id))
       
       for(i in 1:nrow(data)) {
-        dbExecute(con,
+        dbExecute(pool,
           "INSERT INTO app_data_6120_2 (session_id, operation_date, document_number, income_account, 
            dividend_period, operation_description, accounting_method, initial_balance, credit, debit,
            correspondence_debit, correspondence_credit, final_balance)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
-          list(session_id, data[i, 1], data[i, 2], data[i, 3], data[i, 4], data[i, 5], data[i, 6],
-               data[i, 7], data[i, 8], data[i, 9], data[i, 10], data[i, 11], data[i, 12])
+          list(session_id, as.character(data[i, 1]), as.character(data[i, 2]), as.character(data[i, 3]), 
+               as.character(data[i, 4]), as.character(data[i, 5]), as.character(data[i, 6]),
+               as.numeric(data[i, 7]), as.numeric(data[i, 8]), as.numeric(data[i, 9]), 
+               as.character(data[i, 10]), as.character(data[i, 11]), as.numeric(data[i, 12]))
         )
       }
     }
     
-    dbDisconnect(con)
     return(TRUE)
   }, error = function(e) {
     message("Error saving to Neon: ", e$message)
@@ -149,18 +142,21 @@ save_data_to_neon <- function(data, table_name, session_id) {
 # Enhanced load data from Neon with persistent session management
 load_data_from_neon <- function(table_name, session_id = NULL) {
   tryCatch({
-    con <- connect_to_neon()
+    if (is.null(pool)) {
+      message("Database pool is not available")
+      return(NULL)
+    }
     
     # If no session_id provided, load the most recent data
     if (is.null(session_id)) {
       if (table_name == "app_data_6120") {
-        result <- dbGetQuery(con, 
+        result <- dbGetQuery(pool, 
           "SELECT account_name, initial_balance, debit, credit, final_balance 
            FROM app_data_6120 
            WHERE session_id IN (SELECT session_id FROM app_data_6120 ORDER BY created_at DESC LIMIT 1)
            ORDER BY id")
       } else if (table_name == "app_data_6120_1") {
-        result <- dbGetQuery(con,
+        result <- dbGetQuery(pool,
           "SELECT operation_date, document_number, income_account, dividend_period, 
                   operation_description, accounting_method, initial_balance, credit, debit,
                   correspondence_debit, correspondence_credit, final_balance
@@ -168,7 +164,7 @@ load_data_from_neon <- function(table_name, session_id = NULL) {
            WHERE session_id IN (SELECT session_id FROM app_data_6120_1 ORDER BY created_at DESC LIMIT 1)
            ORDER BY id")
       } else if (table_name == "app_data_6120_2") {
-        result <- dbGetQuery(con,
+        result <- dbGetQuery(pool,
           "SELECT operation_date, document_number, income_account, dividend_period, 
                   operation_description, accounting_method, initial_balance, credit, debit,
                   correspondence_debit, correspondence_credit, final_balance
@@ -179,14 +175,14 @@ load_data_from_neon <- function(table_name, session_id = NULL) {
     } else {
       # Load data for specific session_id
       if (table_name == "app_data_6120") {
-        result <- dbGetQuery(con, 
+        result <- dbGetQuery(pool, 
           "SELECT account_name, initial_balance, debit, credit, final_balance 
            FROM app_data_6120 
            WHERE session_id = $1 
            ORDER BY id", 
           list(session_id))
       } else if (table_name == "app_data_6120_1") {
-        result <- dbGetQuery(con,
+        result <- dbGetQuery(pool,
           "SELECT operation_date, document_number, income_account, dividend_period, 
                   operation_description, accounting_method, initial_balance, credit, debit,
                   correspondence_debit, correspondence_credit, final_balance
@@ -195,7 +191,7 @@ load_data_from_neon <- function(table_name, session_id = NULL) {
            ORDER BY id",
           list(session_id))
       } else if (table_name == "app_data_6120_2") {
-        result <- dbGetQuery(con,
+        result <- dbGetQuery(pool,
           "SELECT operation_date, document_number, income_account, dividend_period, 
                   operation_description, accounting_method, initial_balance, credit, debit,
                   correspondence_debit, correspondence_credit, final_balance
@@ -206,7 +202,6 @@ load_data_from_neon <- function(table_name, session_id = NULL) {
       }
     }
     
-    dbDisconnect(con)
     return(result)
   }, error = function(e) {
     message("Error loading from Neon: ", e$message)
@@ -217,8 +212,9 @@ load_data_from_neon <- function(table_name, session_id = NULL) {
 # Get all available sessions for data retrieval
 get_available_sessions <- function() {
   tryCatch({
-    con <- connect_to_neon()
-    sessions <- dbGetQuery(con, 
+    if (is.null(pool)) return(NULL)
+    
+    sessions <- dbGetQuery(pool, 
       "SELECT DISTINCT session_id, MAX(created_at) as last_updated 
        FROM (
          SELECT session_id, created_at FROM app_data_6120
@@ -229,7 +225,6 @@ get_available_sessions <- function() {
        ) AS combined 
        GROUP BY session_id 
        ORDER BY last_updated DESC")
-    dbDisconnect(con)
     return(sessions$session_id)
   }, error = function(e) {
     message("Error getting sessions: ", e$message)
@@ -374,7 +369,8 @@ ui <- fluidPage(
                       actionButton("save_session_btn", "Save Current Session"),
                       actionButton("new_session_btn", "Start New Session"),
                       br(),
-                      textOutput("current_session_info")
+                      textOutput("current_session_info"),
+                      textOutput("db_status")  # Connection status
                   )
                 )
         ),
@@ -455,11 +451,73 @@ ui <- fluidPage(
  )
 
 server = function(input, output, session) {
+  # Initialize connection pool
+  observe({
+    tryCatch({
+      # Check environment variables
+      required_vars <- c("NEON_HOST", "NEON_PORT", "NEON_DATABASE", "NEON_USER", "NEON_PASSWORD")
+      missing_vars <- required_vars[!sapply(required_vars, function(x) nzchar(Sys.getenv(x)))]
+      
+      if (length(missing_vars) > 0) {
+        message("Missing environment variables: ", paste(missing_vars, collapse = ", "))
+        shinyalert("Configuration Error", 
+                   paste("Missing environment variables:", paste(missing_vars, collapse = ", ")), 
+                   type = "error")
+        return(NULL)
+      }
+      
+      # Create connection pool
+      pool <<- dbPool(
+        drv = RPostgres::Postgres(),
+        host = Sys.getenv("NEON_HOST"),
+        port = as.numeric(Sys.getenv("NEON_PORT")),
+        dbname = Sys.getenv("NEON_DATABASE"),
+        user = Sys.getenv("NEON_USER"),
+        password = Sys.getenv("NEON_PASSWORD"),
+        sslmode = "require",
+        minSize = 1,
+        maxSize = 5,
+        idleTimeout = 300000, # 5 minutes
+        validationInterval = 30000, # 30 seconds
+        connect_timeout = 10
+      )
+      
+      # Test connection
+      dbGetQuery(pool, "SELECT 1")
+      message("Database pool connected successfully")
+      
+      # Initialize database tables
+      initialize_database()
+      
+    }, error = function(e) {
+      message("Pool connection failed: ", e$message)
+      shinyalert("Database Error", paste("Failed to connect to database:", e$message), type = "error")
+    })
+  })
+  
+  # Close pool on app stop
+  onStop(function() {
+    if (!is.null(pool)) {
+      poolClose(pool)
+    }
+  })
+  
+  # Database connection status
+  output$db_status <- renderText({
+    if (is.null(pool)) {
+      return("Database status: Disconnected")
+    } else {
+      tryCatch({
+        dbGetQuery(pool, "SELECT 1")
+        return("Database status: Connected")
+      }, error = function(e) {
+        return(paste("Database status: Error -", e$message))
+      })
+    }
+  })
+  
   # Generate a unique session ID that persists
   session_id <- reactiveVal(paste0("session_", as.integer(Sys.time()), "_", sample(1000:9999, 1)))
-  
-  # Initialize database on app start
-  initialize_database()
   
   r <- reactiveValues(
     start = ymd(Sys.Date()),
