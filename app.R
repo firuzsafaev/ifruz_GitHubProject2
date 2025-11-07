@@ -93,7 +93,7 @@ initialize_database <- function() {
   dbDisconnect(con)
 }
 
-# Enhanced save data to Neon with automatic persistence
+# Enhanced save data to Neon with batch operations
 save_data_to_neon <- function(data, table_name, session_id) {
   tryCatch({
     con <- connect_to_neon()
@@ -102,40 +102,59 @@ save_data_to_neon <- function(data, table_name, session_id) {
       # Clear previous session data for this specific session
       dbExecute(con, paste("DELETE FROM app_data_6120 WHERE session_id = $1"), list(session_id))
       
-      # Insert new data
-      for(i in 1:nrow(data)) {
-        dbExecute(con, 
-          "INSERT INTO app_data_6120 (session_id, account_name, initial_balance, debit, credit, final_balance) 
-           VALUES ($1, $2, $3, $4, $5, $6)",
-          list(session_id, data[i, 1], data[i, 2], data[i, 3], data[i, 4], data[i, 5])
-        )
-      }
+      # Prepare data for batch insert
+      insert_data <- data.frame(
+        session_id = session_id,
+        account_name = data[[1]],
+        initial_balance = as.numeric(data[[2]]),
+        debit = as.numeric(data[[3]]),
+        credit = as.numeric(data[[4]]),
+        final_balance = as.numeric(data[[5]])
+      )
+      
+      dbWriteTable(con, "app_data_6120", insert_data, append = TRUE, row.names = FALSE)
+      
     } else if (table_name == "app_data_6120_1") {
       dbExecute(con, paste("DELETE FROM app_data_6120_1 WHERE session_id = $1"), list(session_id))
       
-      for(i in 1:nrow(data)) {
-        dbExecute(con,
-          "INSERT INTO app_data_6120_1 (session_id, operation_date, document_number, income_account, 
-           dividend_period, operation_description, accounting_method, initial_balance, credit, debit,
-           correspondence_debit, correspondence_credit, final_balance)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
-          list(session_id, data[i, 1], data[i, 2], data[i, 3], data[i, 4], data[i, 5], data[i, 6],
-               data[i, 7], data[i, 8], data[i, 9], data[i, 10], data[i, 11], data[i, 12])
-        )
-      }
+      insert_data <- data.frame(
+        session_id = session_id,
+        operation_date = as.Date(data[[1]]),
+        document_number = as.character(data[[2]]),
+        income_account = as.character(data[[3]]),
+        dividend_period = as.character(data[[4]]),
+        operation_description = as.character(data[[5]]),
+        accounting_method = as.character(data[[6]]),
+        initial_balance = as.numeric(data[[7]]),
+        credit = as.numeric(data[[8]]),
+        debit = as.numeric(data[[9]]),
+        correspondence_debit = as.character(data[[10]]),
+        correspondence_credit = as.character(data[[11]]),
+        final_balance = as.numeric(data[[12]])
+      )
+      
+      dbWriteTable(con, "app_data_6120_1", insert_data, append = TRUE, row.names = FALSE)
+      
     } else if (table_name == "app_data_6120_2") {
       dbExecute(con, paste("DELETE FROM app_data_6120_2 WHERE session_id = $1"), list(session_id))
       
-      for(i in 1:nrow(data)) {
-        dbExecute(con,
-          "INSERT INTO app_data_6120_2 (session_id, operation_date, document_number, income_account, 
-           dividend_period, operation_description, accounting_method, initial_balance, credit, debit,
-           correspondence_debit, correspondence_credit, final_balance)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
-          list(session_id, data[i, 1], data[i, 2], data[i, 3], data[i, 4], data[i, 5], data[i, 6],
-               data[i, 7], data[i, 8], data[i, 9], data[i, 10], data[i, 11], data[i, 12])
-        )
-      }
+      insert_data <- data.frame(
+        session_id = session_id,
+        operation_date = as.Date(data[[1]]),
+        document_number = as.character(data[[2]]),
+        income_account = as.character(data[[3]]),
+        dividend_period = as.character(data[[4]]),
+        operation_description = as.character(data[[5]]),
+        accounting_method = as.character(data[[6]]),
+        initial_balance = as.numeric(data[[7]]),
+        credit = as.numeric(data[[8]]),
+        debit = as.numeric(data[[9]]),
+        correspondence_debit = as.character(data[[10]]),
+        correspondence_credit = as.character(data[[11]]),
+        final_balance = as.numeric(data[[12]])
+      )
+      
+      dbWriteTable(con, "app_data_6120_2", insert_data, append = TRUE, row.names = FALSE)
     }
     
     dbDisconnect(con)
@@ -237,8 +256,7 @@ get_available_sessions <- function() {
   })
 }
 
-#ОСВ: 6120
-
+# Data templates
 DF6120 <- data.table(
     "Счет (субчет)" = as.character(c("6120.1.Доходы по дивидендам, отражаемые в составе прибыли и убытка",
                     "6120.2.Доходы по дивидендам, отражаемые в Прочем совокупном доходе",
@@ -249,8 +267,6 @@ DF6120 <- data.table(
     "Сальдо конечное" = as.numeric(c(0)),
     stringsAsFactors = FALSE)
 
-#6120.1.Доходы по дивидендам, отражаемые в составе прибыли и убытка
-
 DF6120.1 <- data.table(
           "Дата операции" = as.character(NA),
           "Номер первичного документа" = as.character(NA),
@@ -258,9 +274,9 @@ DF6120.1 <- data.table(
           "Период, к которому относятся дивиденды" = as.character(NA),
           "Содержание операции" = as.character(NA),
           "Метод учета" = as.character(NA),
-          "Сальдо начальное" = as.numeric(NA),				#row 7
-          "Кредит" = as.numeric(NA),					#row 8 
-          "Дебет" = as.numeric(NA),					#row 9
+          "Сальдо начальное" = as.numeric(NA),
+          "Кредит" = as.numeric(NA),
+          "Дебет" = as.numeric(NA),
          "Корреспонденция счетов: Счет № (дебет)" = as.character(NA),
           "Корреспонденция счетов: Счет № (кредит)" = as.character(NA),
           "Сальдо конечное" = as.numeric(NA),
@@ -281,8 +297,6 @@ DF6120.1_2 <- data.table(
           "Сальдо конечное" = as.numeric(NA),
                 stringsAsFactors = FALSE)
 
-#6120.2.Доходы по дивидендам, отражаемые в Прочем совокупном доходе
-
 DF6120.2 <- data.table(
           "Дата операции" = as.character(NA),
           "Номер первичного документа" = as.character(NA),
@@ -290,9 +304,9 @@ DF6120.2 <- data.table(
           "Период, к которому относятся дивиденды" = as.character(NA),
           "Содержание операции" = as.character(NA),
           "Метод учета" = as.character(NA),
-          "Сальдо начальное" = as.numeric(NA),				#row 7
-          "Кредит" = as.numeric(NA),					#row 8 
-          "Дебет" = as.numeric(NA),					#row 9
+          "Сальдо начальное" = as.numeric(NA),
+          "Кредит" = as.numeric(NA),
+          "Дебет" = as.numeric(NA),
          "Корреспонденция счетов: Счет № (дебет)" = as.character(NA),
           "Корреспонденция счетов: Счет № (кредит)" = as.character(NA),
           "Сальдо конечное" = as.numeric(NA),
@@ -314,6 +328,14 @@ DF6120.2_2 <- data.table(
                 stringsAsFactors = FALSE)
 
 ui <- fluidPage(
+  tags$head(
+    tags$style(HTML("
+      .shiny-output-error { visibility: hidden; }
+      .shiny-output-error:before { visibility: hidden; }
+      .content-wrapper, .right-side { background-color: #ffffff; }
+      .table-container { margin: 10px; }
+    "))
+  ),
   dashboardPage(
     dashboardHeader(title = "МСФО"),
     dashboardSidebar(width = 1050,
@@ -327,17 +349,15 @@ ui <- fluidPage(
               menuItem("6110.Доходы по финансовым активам", tabName = "Prft6110"),
               menuItem("6120.Доходы по дивидендам", tabName = "Prft6120",
                 menuSubItem("Оборотно-сальдовая ведомость", tabName = "table6120"),
-        menuSubItem("6120.1.Доходы по дивидендам, отражаемые в составе прибыли и убытка", tabName = "table6120_1"),
+                menuSubItem("6120.1.Доходы по дивидендам, отражаемые в составе прибыли и убытка", tabName = "table6120_1"),
                 menuSubItem("6120.2.Доходы по дивидендам, отражаемые в Прочем совокупном доходе", tabName = "table6120_2"))
             )
           )
         )
       )
     ),
-
     dashboardBody(
-      tags$style(
-        '
+      tags$style(HTML('
         @media (min-width: 768px){
           .sidebar-mini.sidebar-collapse .main-header .logo {
               width: 230px; 
@@ -346,7 +366,9 @@ ui <- fluidPage(
               margin-left: 230px;
           }
         }
-      '),
+        .content-wrapper { background-color: #f4f4f4; }
+        .box { background-color: #ffffff; }
+      ')),
       tabItems(
         tabItem(tabName = "home",
                 h2("Welcome to the Home Page"),
@@ -363,79 +385,56 @@ ui <- fluidPage(
         ),
         tabItem(tabName = "table6120",
           fluidRow(
-            column(
-              width = 12, br(),
+            box(width = 12, title = "ОСВ: 6120.Доходы по дивидендам",
               dateRangeInput("dates6120", "Выберите период ОСВ:",
                      start = Sys.Date(), end = Sys.Date(), separator = "-"),
-              uiOutput("nested_ui6120")),
-            column(
-              width = 12, br(),
-              tags$b("ОСВ: 6120.Доходы по дивидендам"),
-          tags$div(style = "margin-bottom: 20px;"),
               rHandsontableOutput("table6120Item1"),
-          downloadButton("download_df6120", "Загрузить данные"))
+              downloadButton("download_df6120", "Загрузить данные")
+            )
           )
         ),
         tabItem(tabName = "table6120_1",
           fluidRow(
-            column(
-              width = 12, br(),
-              tags$b("Журнал учета хозопераций: 6120.1.Доходы по дивидендам, отражаемые в составе прибыли и убытка"),
-          tags$div(style = "margin-bottom: 20px;"),
+            box(width = 12, title = "Журнал учета хозопераций: 6120.1.Доходы по дивидендам, отражаемые в составе прибыли и убытка",
               rHandsontableOutput("table6120.1Item1"),
-          downloadButton("download_df6120.1", "Загрузить данные")
+              downloadButton("download_df6120.1", "Загрузить данные")
             ),
-            column(
-              width = 12, br(),
-              tags$b("Выборка данных по дате операции, номеру первичного документа или статье дохода"),
-          tags$div(style = "margin-bottom: 20px;"),
+            box(width = 12, title = "Выборка данных по дате операции, номеру первичного документа или статье дохода",
               selectInput("choices6120.1", label=NULL,
-                          choices = c(	"Выбор по дате операции", 
+                          choices = c("Выбор по дате операции", 
                     "Выбор по номеру первичного документа", 
                     "Выбор по статье дохода", 
                     "Выбор по дате операции и номеру первичного документа", 
                     "Выбор по дате операции и статье дохода")),
-              uiOutput("nested_ui6120.1")
-            ),
-            column(
-              width = 12, br(),
-              label=NULL,
+              uiOutput("nested_ui6120.1"),
               rHandsontableOutput("table6120.1Item2"),
-          downloadButton("download_df6120.1_2", "Загрузить данные"))
+              downloadButton("download_df6120.1_2", "Загрузить данные")
+            )
           )
         ),
         tabItem(tabName = "table6120_2",
           fluidRow(
-            column(
-              width = 12, br(),
-              tags$b("Журнал учета хозопераций: 6120.2.Доходы по дивидендам, отражаемые в Прочем совокупном доходе"),
-          tags$div(style = "margin-bottom: 20px;"),
+            box(width = 12, title = "Журнал учета хозопераций: 6120.2.Доходы по дивидендам, отражаемые в Прочем совокупном доходе",
               rHandsontableOutput("table6120.2Item1"),
-          downloadButton("download_df6120.2", "Загрузить данные")
+              downloadButton("download_df6120.2", "Загрузить данные")
             ),
-            column(
-              width = 12, br(),
-              tags$b("Выборка данных по дате операции, номеру первичного документа или статье дохода"),
-          tags$div(style = "margin-bottom: 20px;"),
+            box(width = 12, title = "Выборка данных по дате операции, номеру первичного документа или статье дохода",
               selectInput("choices6120.2", label=NULL,
-                          choices = c(	"Выбор по дате операции", 
+                          choices = c("Выбор по дате операции", 
                     "Выбор по номеру первичного документа", 
                     "Выбор по статье дохода", 
                     "Выбор по дате операции и номеру первичного документа", 
                     "Выбор по дате операции и статье дохода")),
-              uiOutput("nested_ui6120.2")
-            ),
-            column(
-              width = 12, br(),
-              label=NULL,
+              uiOutput("nested_ui6120.2"),
               rHandsontableOutput("table6120.2Item2"),
-          downloadButton("download_df6120.2_2", "Загрузить данные"))
-           )
-         )
-       )
-     )
-   )
- )
+              downloadButton("download_df6120.2_2", "Загрузить данные")
+            )
+          )
+        )
+      )
+    )
+  )
+)
 
 server = function(input, output, session) {
   # Generate a unique session ID that persists
@@ -464,6 +463,8 @@ server = function(input, output, session) {
     if (!is.null(input$session_selector) && input$session_selector != "") {
       selected_session <- input$session_selector
       
+      showNotification("Loading session data...", type = "message")
+      
       # Load data for selected session
       neon_data_6120 <- load_data_from_neon("app_data_6120", selected_session)
       if (!is.null(neon_data_6120) && nrow(neon_data_6120) > 0) {
@@ -481,26 +482,34 @@ server = function(input, output, session) {
       }
       
       session_id(selected_session)
-      shinyalert("Success", paste("Loaded session:", selected_session), type = "success")
+      showNotification(paste("Loaded session:", selected_session), type = "message")
     }
   })
   
   # Save current session
   observeEvent(input$save_session_btn, {
+    showNotification("Saving session...", type = "message")
+    
+    success_count <- 0
     if (!is.null(data$df6120)) {
-      save_data_to_neon(data$df6120, "app_data_6120", session_id())
+      if(save_data_to_neon(data$df6120, "app_data_6120", session_id())) success_count <- success_count + 1
     }
     if (!is.null(data$df6120.1)) {
-      save_data_to_neon(data$df6120.1, "app_data_6120_1", session_id())
+      if(save_data_to_neon(data$df6120.1, "app_data_6120_1", session_id())) success_count <- success_count + 1
     }
     if (!is.null(data$df6120.2)) {
-      save_data_to_neon(data$df6120.2, "app_data_6120_2", session_id())
+      if(save_data_to_neon(data$df6120.2, "app_data_6120_2", session_id())) success_count <- success_count + 1
     }
-    shinyalert("Success", paste("Session saved:", session_id()), type = "success")
-    # Update session list
-    sessions <- get_available_sessions()
-    if (!is.null(sessions)) {
-      updateSelectInput(session, "session_selector", choices = c("", sessions))
+    
+    if(success_count > 0) {
+      showNotification(paste("Session saved:", session_id()), type = "message")
+      # Update session list
+      sessions <- get_available_sessions()
+      if (!is.null(sessions)) {
+        updateSelectInput(session, "session_selector", choices = c("", sessions))
+      }
+    } else {
+      showNotification("Error saving session", type = "error")
     }
   })
   
@@ -510,13 +519,13 @@ server = function(input, output, session) {
     session_id(new_id)
     
     # Reset data to default
-    data$df6120 <- as.data.table(DF6120)
-    data$df6120.1 <- as.data.table(DF6120.1)
-    data$df6120.2 <- as.data.table(DF6120.2)
-    data$df6120.1_2 <- as.data.table(DF6120.1_2)
-    data$df6120.2_2 <- as.data.table(DF6120.2_2)
+    data$df6120 <- copy(DF6120)
+    data$df6120.1 <- copy(DF6120.1)
+    data$df6120.2 <- copy(DF6120.2)
+    data$df6120.1_2 <- copy(DF6120.1_2)
+    data$df6120.2_2 <- copy(DF6120.2_2)
     
-    shinyalert("New Session", paste("Started new session:", new_id), type = "info")
+    showNotification(paste("Started new session:", new_id), type = "message")
   })
   
   # Display current session info
@@ -524,86 +533,124 @@ server = function(input, output, session) {
     paste("Current Session ID:", session_id())
   })
 
-  # Load most recent data on app start
+  # Load most recent data on app start - with error handling
   observe({
-    # Try to load the most recent data
-    neon_data_6120 <- load_data_from_neon("app_data_6120")
-    if (!is.null(neon_data_6120) && nrow(neon_data_6120) > 0) {
-      data$df6120 <- as.data.table(neon_data_6120)
-    } else {
-      data$df6120 <- as.data.table(DF6120)
-    }
-    
-    neon_data_6120_1 <- load_data_from_neon("app_data_6120_1")
-    if (!is.null(neon_data_6120_1) && nrow(neon_data_6120_1) > 0) {
-      data$df6120.1 <- as.data.table(neon_data_6120_1)
-    } else {
-      data$df6120.1 <- as.data.table(DF6120.1)
-    }
-    
-    neon_data_6120_2 <- load_data_from_neon("app_data_6120_2")
-    if (!is.null(neon_data_6120_2) && nrow(neon_data_6120_2) > 0) {
-      data$df6120.2 <- as.data.table(neon_data_6120_2)
-    } else {
-      data$df6120.2 <- as.data.table(DF6120.2)
-    }
-    
-    # Initialize filtered tables
-    data$df6120.1_2 <- as.data.table(DF6120.1_2)
-    data$df6120.2_2 <- as.data.table(DF6120.2_2)
+    tryCatch({
+      # Try to load the most recent data
+      neon_data_6120 <- load_data_from_neon("app_data_6120")
+      if (!is.null(neon_data_6120) && nrow(neon_data_6120) > 0) {
+        data$df6120 <- as.data.table(neon_data_6120)
+      } else {
+        data$df6120 <- copy(DF6120)
+      }
+      
+      neon_data_6120_1 <- load_data_from_neon("app_data_6120_1")
+      if (!is.null(neon_data_6120_1) && nrow(neon_data_6120_1) > 0) {
+        data$df6120.1 <- as.data.table(neon_data_6120_1)
+      } else {
+        data$df6120.1 <- copy(DF6120.1)
+      }
+      
+      neon_data_6120_2 <- load_data_from_neon("app_data_6120_2")
+      if (!is.null(neon_data_6120_2) && nrow(neon_data_6120_2) > 0) {
+        data$df6120.2 <- as.data.table(neon_data_6120_2)
+      } else {
+        data$df6120.2 <- copy(DF6120.2)
+      }
+      
+      # Initialize filtered tables
+      data$df6120.1_2 <- copy(DF6120.1_2)
+      data$df6120.2_2 <- copy(DF6120.2_2)
+    }, error = function(e) {
+      showNotification("Error loading initial data", type = "error")
+      # Set default data
+      data$df6120 <- copy(DF6120)
+      data$df6120.1 <- copy(DF6120.1)
+      data$df6120.2 <- copy(DF6120.2)
+      data$df6120.1_2 <- copy(DF6120.1_2)
+      data$df6120.2_2 <- copy(DF6120.2_2)
+    })
   })
 
-  # Auto-save data when tables are modified with debouncing
+  # Optimized auto-save with proper debouncing and error handling
   auto_save_6120 <- debounce(
     observe({
       if(!is.null(input$table6120Item1) && !is.null(data$df6120)) {
-        data$df6120 <- hot_to_r(input$table6120Item1)
-        save_data_to_neon(data$df6120, "app_data_6120", session_id())
+        tryCatch({
+          new_data <- hot_to_r(input$table6120Item1)
+          if(!identical(new_data, data$df6120)) {
+            data$df6120 <- new_data
+            save_data_to_neon(data$df6120, "app_data_6120", session_id())
+          }
+        }, error = function(e) {
+          message("Error in auto-save 6120: ", e$message)
+        })
       }
-    }), 2000) # 2 second delay
+    }), 3000) # 3 second delay
 
   auto_save_6120_1 <- debounce(
     observe({
       if(!is.null(input$table6120.1Item1) && !is.null(data$df6120.1)) {
-        data$df6120.1 <- hot_to_r(input$table6120.1Item1)
-        save_data_to_neon(data$df6120.1, "app_data_6120_1", session_id())
+        tryCatch({
+          new_data <- hot_to_r(input$table6120.1Item1)
+          if(!identical(new_data, data$df6120.1)) {
+            data$df6120.1 <- new_data
+            save_data_to_neon(data$df6120.1, "app_data_6120_1", session_id())
+          }
+        }, error = function(e) {
+          message("Error in auto-save 6120.1: ", e$message)
+        })
       }
-    }), 2000)
+    }), 3000)
 
   auto_save_6120_2 <- debounce(
     observe({
       if(!is.null(input$table6120.2Item1) && !is.null(data$df6120.2)) {
-        data$df6120.2 <- hot_to_r(input$table6120.2Item1)
-        save_data_to_neon(data$df6120.2, "app_data_6120_2", session_id())
+        tryCatch({
+          new_data <- hot_to_r(input$table6120.2Item1)
+          if(!identical(new_data, data$df6120.2)) {
+            data$df6120.2 <- new_data
+            save_data_to_neon(data$df6120.2, "app_data_6120_2", session_id())
+          }
+        }, error = function(e) {
+          message("Error in auto-save 6120.2: ", e$message)
+        })
       }
-    }), 2000)
+    }), 3000)
 
   # Initialize data if not already set
   observe({
-    if (is.null(data$df6120)) data$df6120 <- as.data.table(DF6120)
-    if (is.null(data$df6120.1)) data$df6120.1 <- as.data.table(DF6120.1)
-    if (is.null(data$df6120.2)) data$df6120.2 <- as.data.table(DF6120.2)
-    if (is.null(data$df6120.1_2)) data$df6120.1_2 <- as.data.table(DF6120.1_2)
-    if (is.null(data$df6120.2_2)) data$df6120.2_2 <- as.data.table(DF6120.2_2)
+    if (is.null(data$df6120)) data$df6120 <- copy(DF6120)
+    if (is.null(data$df6120.1)) data$df6120.1 <- copy(DF6120.1)
+    if (is.null(data$df6120.2)) data$df6120.2 <- copy(DF6120.2)
+    if (is.null(data$df6120.1_2)) data$df6120.1_2 <- copy(DF6120.1_2)
+    if (is.null(data$df6120.2_2)) data$df6120.2_2 <- copy(DF6120.2_2)
   })
 
-#*****************************
-  observe({
-    if(!is.null(input$table6120Item1))
-      data$df6120 <- hot_to_r(input$table6120Item1)
-  })
+  # Table update handlers with throttling
+  table_update_6120 <- throttle(
+    observe({
+      if(!is.null(input$table6120Item1)) {
+        data$df6120 <- hot_to_r(input$table6120Item1)
+      }
+    }), 1000
+  )
 
-  observe({
-    if(!is.null(input$table6120.1Item1))
-      data$df6120.1 <- hot_to_r(input$table6120.1Item1)
-  })
+  table_update_6120_1 <- throttle(
+    observe({
+      if(!is.null(input$table6120.1Item1)) {
+        data$df6120.1 <- hot_to_r(input$table6120.1Item1)
+      }
+    }), 1000
+  )
 
-  observe({
-    if(!is.null(input$table6120.2Item1))
-      data$df6120.2 <- hot_to_r(input$table6120.2Item1)
-  })
-
-#*****************************************
+  table_update_6120_2 <- throttle(
+    observe({
+      if(!is.null(input$table6120.2Item1)) {
+        data$df6120.2 <- hot_to_r(input$table6120.2Item1)
+      }
+    }), 1000
+  )
 
 #ОСВ: 6120
 
@@ -613,7 +660,7 @@ observeEvent(input$dates6120, {
 
  tryCatch({
   if (start > end) {
-    shinyalert("Ошибка при вводе: конечная дата предшествует начальной дате", type = "error")
+    showNotification("Ошибка при вводе: конечная дата предшествует начальной дате", type = "error")
     updateDateRangeInput(
       session, 
       "dates6120", 
@@ -629,78 +676,122 @@ observeEvent(input$dates6120, {
                            "dates6120",
                            start = ymd(Sys.Date()),
                            end = ymd(Sys.Date()))
-      shinyalert("Диапазон дат не может быть пустым! Переход на текущую дату.",
+      showNotification("Диапазон дат не может быть пустым! Переход на текущую дату.",
                  type = "error")
     })
  }, ignoreInit = TRUE)
 
-observe({
+# Optimized date filtering with throttling
+filter_dates_6120_1 <- throttle(
+  observe({
     if (!any(is.na(input$dates6120))) {
       from=as.Date(input$dates6120[1L])
       to=as.Date(input$dates6120[2L])
       if (from>to) to = from
-      selectdates6120.1_5 <- seq.Date(from=from,
-                               to=to, by = "day")
-     data$df6120.1_1 <- data$df6120.1[as.Date(data$df6120.1$`Дата операции`) %in% selectdates6120.1_5, ]
-    } else {
+      selectdates6120.1_5 <- seq.Date(from=from, to=to, by = "day")
+      if(!is.null(data$df6120.1)) {
+        data$df6120.1_1 <- data$df6120.1[as.Date(data$df6120.1$`Дата операции`) %in% selectdates6120.1_5, ]
+      }
+    } else if(!is.null(data$df6120.1)) {
       selectdates6120.1_6 <- unique(as.Date(data$df6120.1$`Дата операции`))
       data$df6120.1_1 <- data$df6120.1[data$df6120.1$`Дата операции` %in% selectdates6120.1_6, ]
     }
-  })
+  }), 500
+)
 
-observe({
+filter_dates_6120_2 <- throttle(
+  observe({
     if (!any(is.na(input$dates6120))) {
       from=as.Date(input$dates6120[1L])
       to=as.Date(input$dates6120[2L])
       if (from>to) to = from
-      selectdates6120.2_5 <- seq.Date(from=from,
-                               to=to, by = "day")
-     data$df6120.2_1 <- data$df6120.2[as.Date(data$df6120.2$`Дата операции`) %in% selectdates6120.2_5, ]
-    } else {
+      selectdates6120.2_5 <- seq.Date(from=from, to=to, by = "day")
+      if(!is.null(data$df6120.2)) {
+        data$df6120.2_1 <- data$df6120.2[as.Date(data$df6120.2$`Дата операции`) %in% selectdates6120.2_5, ]
+      }
+    } else if(!is.null(data$df6120.2)) {
       selectdates6120.2_6 <- unique(as.Date(data$df6120.2$`Дата операции`))
       data$df6120.2_1 <- data$df6120.2[data$df6120.2$`Дата операции` %in% selectdates6120.2_6, ]
     }
+  }), 500
+)
+
+# Optimized summary calculations
+update_summary_6120 <- throttle(
+  observe({
+    if(!is.null(data$df6120.1_1) && nrow(data$df6120.1_1) > 0) {
+      tryCatch({
+        summary_1 <- data$df6120.1_1[, list(
+          `Сальдо начальное` = sum(`Сальдо начальное`[1L], na.rm = TRUE),
+          Кредит = sum(`Кредит`, na.rm = TRUE),
+          Дебет = sum(`Дебет`, na.rm = TRUE),
+          `Сальдо конечное` = sum(`Сальдо конечное`[.N], na.rm = TRUE)
+        ), by="Номер первичного документа"][, .(
+          `Сальдо начальное` = sum(`Сальдо начальное`),
+          Дебет = sum(Дебет),
+          Кредит = sum(Кредит),
+          `Сальдо конечное` = sum(`Сальдо конечное`)
+        )]
+        
+        if(nrow(summary_1) > 0) {
+          data$df6120[1, 2:5] <- summary_1
+        }
+      }, error = function(e) {
+        message("Error calculating summary 6120.1: ", e$message)
+      })
+    }
+    
+    if(!is.null(data$df6120.2_1) && nrow(data$df6120.2_1) > 0) {
+      tryCatch({
+        summary_2 <- data$df6120.2_1[, list(
+          `Сальдо начальное` = sum(`Сальдо начальное`[1L], na.rm = TRUE),
+          Кредит = sum(`Кредит`, na.rm = TRUE),
+          Дебет = sum(`Дебет`, na.rm = TRUE),
+          `Сальдо конечное` = sum(`Сальдо конечное`[.N], na.rm = TRUE)
+        ), by="Номер первичного документа"][, .(
+          `Сальдо начальное` = sum(`Сальдо начальное`),
+          Дебет = sum(Дебет),
+          Кредит = sum(Кредит),
+          `Сальдо конечное` = sum(`Сальдо конечное`)
+        )]
+        
+        if(nrow(summary_2) > 0) {
+          data$df6120[2, 2:5] <- summary_2
+        }
+      }, error = function(e) {
+        message("Error calculating summary 6120.2: ", e$message)
+      })
+    }
+    
+    # Update total row
+    if(!is.null(data$df6120) && nrow(data$df6120) >= 3) {
+      tryCatch({
+        data$df6120[3, 2:5] <- data$df6120[1:2, lapply(.SD, sum, na.rm = TRUE), .SDcols = 2:5]
+      }, error = function(e) {
+        message("Error updating total row: ", e$message)
+      })
+    }
+  }), 1000
+)
+
+  output$nested_ui6120 <- renderUI({
+    !any(is.na(input$dates6120))
   })
 
-observe({
-  data$df6120[1, 2:5] <- data$df6120.1_1[, list(
-    `Сальдо начальное` = sum(`Сальдо начальное`[1L], na.rm = TRUE),
-    Кредит = sum(`Кредит`, na.rm = TRUE),
-    Дебет = sum(`Дебет`, na.rm = TRUE),
-    `Сальдо конечное` = sum(`Сальдо конечное`[.N], na.rm = TRUE)
-  ), by="Номер первичного документа"][, .(
-    `Сальдо начальное` = sum(`Сальдо начальное`),
-    Дебет = sum(Дебет),
-    Кредит = sum(Кредит),
-    `Сальдо конечное` = sum(`Сальдо конечное`)
-  )]
-})
-
-observe({
-  data$df6120[2, 2:5] <- data$df6120.2_1[, list(
-    `Сальдо начальное` = sum(`Сальдо начальное`[1L], na.rm = TRUE),
-    Кредит = sum(`Кредит`, na.rm = TRUE),
-    Дебет = sum(`Дебет`, na.rm = TRUE),
-    `Сальдо конечное` = sum(`Сальдо конечное`[.N], na.rm = TRUE)
-  ), by="Номер первичного документа"][, .(
-    `Сальдо начальное` = sum(`Сальдо начальное`),
-    Дебет = sum(Дебет),
-    Кредит = sum(Кредит),
-    `Сальдо конечное` = sum(`Сальдо конечное`)
-  )]
-})
-
-observe({ data$df6120[3, 2:5] <- data$df6120[, .SD[1:2, lapply(.SD, sum)], .SDcols = 2:5] })
-
-  output$nested_ui6120 <- renderUI({!any(is.na(input$dates6120))})
-
   output$table6120Item1 <- renderRHandsontable({
-    rhandsontable(data$df6120, colWidths = 150, height = 120, readOnly=TRUE, contextMenu = FALSE, fixedColumnsLeft = 1, manualColumnResize = TRUE) |>
-	hot_col(1, width = 500) |>
-	hot_cols(column = 1, renderer = "function(instance, td, row, col, prop, value) {
+    req(data$df6120)
+    tryCatch({
+      rhandsontable(data$df6120, colWidths = 150, height = 120, readOnly=TRUE, 
+                   contextMenu = FALSE, fixedColumnsLeft = 1, manualColumnResize = TRUE) |>
+      hot_col(1, width = 500) |>
+      hot_cols(column = 1, renderer = "function(instance, td, row, col, prop, value) {
          if (row === 2) { td.style.fontWeight = 'bold';
          } Handsontable.renderers.TextRenderer.apply(this, arguments);
       }")
+    }, error = function(e) {
+      showNotification("Error rendering table 6120", type = "error")
+      NULL
+    })
   })
 
   output$download_df6120 <- downloadHandler(
@@ -709,17 +800,14 @@ observe({ data$df6120[3, 2:5] <- data$df6120[, .SD[1:2, lapply(.SD, sum)], .SDco
       write.xlsx(data$df6120, file)
   })
 
-#**************************************
-
-#6120.1
-
+# 6120.1 Table
 observeEvent(input$dates6120.1, {
     start <- ymd(input$dates6120.1[[1]])
     end <- ymd(input$dates6120.1[[2]])
 
  tryCatch({  
   if (start > end) {
-    shinyalert("Ошибка при вводе: конечная дата предшествует начальной дате", type = "error")
+    showNotification("Ошибка при вводе: конечная дата предшествует начальной дате", type = "error")
     updateDateRangeInput(
       session, 
       "dates6120.1", 
@@ -735,77 +823,99 @@ observeEvent(input$dates6120.1, {
                            "dates6120.1",
                            start = ymd(Sys.Date()),
                            end = ymd(Sys.Date()))
-      shinyalert("Диапазон дат не может быть пустым! Переход на текущую дату.",
+      showNotification("Диапазон дат не может быть пустым! Переход на текущую дату.",
                  type = "error")
     })
 }, ignoreInit = TRUE)
 
-observe({ if (!is.null(input$table6120.1Item1)) {
-    data$df6120.1 <- hot_to_r(input$table6120.1Item1) 
-
-    if (!any(is.na(input$dates6120.1)) && input$choices6120.1 == "Выбор по дате операции") {
-     	from=as.Date(input$dates6120.1[1L])
-      	to=as.Date(input$dates6120.1[2L])
-      	if (from>to) to = from
-      	selectdates6120.1_1 <- seq.Date(from=from, to=to, by = "day")
-      	data$df6120.1_2 <- data$df6120.1[as.Date(data$df6120.1$"Дата операции") %in% selectdates6120.1_1, ]
-    } else if (!is.null(input$text) && input$choices6120.1 == "Выбор по номеру первичного документа") {
-      	data$df6120.1_2 <- data$df6120.1[data$df6120.1$"Номер первичного документа" == input$text, ]
-    } else if (!is.null(input$text) && input$choices6120.1 == "Выбор по статье дохода") {
-      	data$df6120.1_2 <- data$df6120.1[data$df6120.1$"Счет № статьи дохода" == input$text, ]
-    } else if (!is.null(input$dates6120.1) && !any(is.na(input$dates6120.1)) && !is.null(input$text) && input$choices6120.1 == "Выбор по дате операции и номеру первичного документа") {
-     	from=as.Date(input$dates6120.1[1L])
-      	to=as.Date(input$dates6120.1[2L])
-      	if (from>to) to = from
-      	selectdates6120.1_2 <- seq.Date(from=from, to=to, by = "day")
-      	data$df6120.1_2 <- data$df6120.1[as.Date(data$df6120.1$"Дата операции") %in% selectdates6120.1_2 & data$df6120.1$"Номер первичного документа" == input$text, ]
-    } else if (!is.null(input$dates6120.1) && !any(is.na(input$dates6120.1)) && !is.null(input$text) && input$choices6120.1 == "Выбор по дате операции и статье дохода") {
-     	from=as.Date(input$dates6120.1[1L])
-      	to=as.Date(input$dates6120.1[2L])
-      	if (from>to) to = from
-      	selectdates6120.1_3 <- seq.Date(from=from, to=to, by = "day")
-      	data$df6120.1_2 <- data$df6120.1[as.Date(data$df6120.1$"Дата операции") %in% selectdates6120.1_3 & data$df6120.1$"Счет № статьи дохода" == input$text, ]
-    } else {
-        selectdates6120.1_4 <- unique(data$df6120.1$"Дата операции")
-        data$df6120.1_2 <- data$df6120.1[data$df6120.1$"Дата операции" %in% selectdates6120.1_4, ]
+# Optimized filtering for 6120.1
+filter_data_6120_1 <- throttle(
+  observe({ 
+    if (!is.null(data$df6120.1)) {
+      tryCatch({
+        if (!any(is.na(input$dates6120.1)) && input$choices6120.1 == "Выбор по дате операции") {
+          from=as.Date(input$dates6120.1[1L])
+          to=as.Date(input$dates6120.1[2L])
+          if (from>to) to = from
+          selectdates6120.1_1 <- seq.Date(from=from, to=to, by = "day")
+          data$df6120.1_2 <- data$df6120.1[as.Date(data$df6120.1$"Дата операции") %in% selectdates6120.1_1, ]
+        } else if (!is.null(input$text) && input$choices6120.1 == "Выбор по номеру первичного документа") {
+          data$df6120.1_2 <- data$df6120.1[data$df6120.1$"Номер первичного документа" == input$text, ]
+        } else if (!is.null(input$text) && input$choices6120.1 == "Выбор по статье дохода") {
+          data$df6120.1_2 <- data$df6120.1[data$df6120.1$"Счет № статьи дохода" == input$text, ]
+        } else if (!is.null(input$dates6120.1) && !any(is.na(input$dates6120.1)) && !is.null(input$text) && input$choices6120.1 == "Выбор по дате операции и номеру первичного документа") {
+          from=as.Date(input$dates6120.1[1L])
+          to=as.Date(input$dates6120.1[2L])
+          if (from>to) to = from
+          selectdates6120.1_2 <- seq.Date(from=from, to=to, by = "day")
+          data$df6120.1_2 <- data$df6120.1[as.Date(data$df6120.1$"Дата операции") %in% selectdates6120.1_2 & data$df6120.1$"Номер первичного документа" == input$text, ]
+        } else if (!is.null(input$dates6120.1) && !any(is.na(input$dates6120.1)) && !is.null(input$text) && input$choices6120.1 == "Выбор по дате операции и статье дохода") {
+          from=as.Date(input$dates6120.1[1L])
+          to=as.Date(input$dates6120.1[2L])
+          if (from>to) to = from
+          selectdates6120.1_3 <- seq.Date(from=from, to=to, by = "day")
+          data$df6120.1_2 <- data$df6120.1[as.Date(data$df6120.1$"Дата операции") %in% selectdates6120.1_3 & data$df6120.1$"Счет № статьи дохода" == input$text, ]
+        } else {
+          selectdates6120.1_4 <- unique(data$df6120.1$"Дата операции")
+          data$df6120.1_2 <- data$df6120.1[data$df6120.1$"Дата операции" %in% selectdates6120.1_4, ]
+        }
+      }, error = function(e) {
+        message("Error filtering data 6120.1: ", e$message)
+      })
     }
-}
-})
+  }), 500
+)
 
   output$table6120.1Item1 <- renderRHandsontable({
-    
-   data$df6120.1[, `Сальдо конечное` := data$df6120.1[[7]] + data$df6120.1[[8]] - data$df6120.1[[9]]]
-
-    rhandsontable(data$df6120.1, colWidths = 150, height = 300, allowInvalid=FALSE, fixedColumnsLeft = 2, manualColumnResize = TRUE) |>
-      hot_col(1, dateFormat = "YYYY-MM-DD", type = "date")
+    req(data$df6120.1)
+    tryCatch({
+      # Calculate final balance
+      if(nrow(data$df6120.1) > 0) {
+        data$df6120.1[, `Сальдо конечное` := data$df6120.1[[7]] + data$df6120.1[[8]] - data$df6120.1[[9]]]
+      }
+      
+      rhandsontable(data$df6120.1, colWidths = 150, height = 300, allowInvalid=FALSE, 
+                   fixedColumnsLeft = 2, manualColumnResize = TRUE) |>
+        hot_col(1, dateFormat = "YYYY-MM-DD", type = "date")
+    }, error = function(e) {
+      showNotification("Error rendering table 6120.1", type = "error")
+      NULL
+    })
   })
   
   output$nested_ui6120.1 <- renderUI({
     if (input$choices6120.1 == "Выбор по дате операции") {
-      	dateRangeInput("dates6120.1", "Выберите период времени:", format="yyyy-mm-dd",
-                     start = Sys.Date(), end = Sys.Date(), separator = "-")
+      dateRangeInput("dates6120.1", "Выберите период времени:", format="yyyy-mm-dd",
+                   start = Sys.Date(), end = Sys.Date(), separator = "-")
     } else if (input$choices6120.1 == "Выбор по номеру первичного документа") {
-      	textInput("text", "Укажите номер первичного документа:")
+      textInput("text", "Укажите номер первичного документа:")
     } else if (input$choices6120.1 == "Выбор по статье дохода") {
-      	textInput("text", "Укажите Счет № статьи дохода:")
+      textInput("text", "Укажите Счет № статьи дохода:")
     } else if (input$choices6120.1 == "Выбор по дате операции и номеру первичного документа") {
       fluidRow(
-       	dateRangeInput("dates6120.1", "Выберите период времени:",
-                       start = Sys.Date(), end = Sys.Date(), separator = "-"),
+        dateRangeInput("dates6120.1", "Выберите период времени:",
+                     start = Sys.Date(), end = Sys.Date(), separator = "-"),
         textInput("text", "Укажите номер первичного документа:")
       )
     } else if (input$choices6120.1 == "Выбор по дате операции и статье дохода") {
       fluidRow(
-       	dateRangeInput("dates6120.1", "Выберите период времени:",
-                       start = Sys.Date(), end = Sys.Date(), separator = "-"),
+        dateRangeInput("dates6120.1", "Выберите период времени:",
+                     start = Sys.Date(), end = Sys.Date(), separator = "-"),
         textInput("text", "Укажите Счет № статьи дохода:")
       )
     }
   })
 
   output$table6120.1Item2 <- renderRHandsontable({
-    rhandsontable(data$df6120.1_2, colWidths = 150, height = 300, readOnly=TRUE, contextMenu = FALSE, manualColumnResize = TRUE) |>
-      hot_col(1, dateFormat = "YYYY-MM-DD", type = "date")
+    req(data$df6120.1_2)
+    tryCatch({
+      rhandsontable(data$df6120.1_2, colWidths = 150, height = 300, readOnly=TRUE, 
+                   contextMenu = FALSE, manualColumnResize = TRUE) |>
+        hot_col(1, dateFormat = "YYYY-MM-DD", type = "date")
+    }, error = function(e) {
+      showNotification("Error rendering filtered table 6120.1", type = "error")
+      NULL
+    })
   })
 
   output$download_df6120.1 <- downloadHandler(
@@ -820,17 +930,14 @@ observe({ if (!is.null(input$table6120.1Item1)) {
       write.xlsx(data$df6120.1_2, file)
   })
 
-#****************************************
-
-#6120.2
-
+# 6120.2 Table (similar optimizations as 6120.1)
 observeEvent(input$dates6120.2, {
     start <- ymd(input$dates6120.2[[1]])
     end <- ymd(input$dates6120.2[[2]])
 
  tryCatch({  
   if (start > end) {
-    shinyalert("Ошибка при вводе: конечная дата предшествует начальной дате", type = "error")
+    showNotification("Ошибка при вводе: конечная дата предшествует начальной дате", type = "error")
     updateDateRangeInput(
       session, 
       "dates6120.2", 
@@ -846,77 +953,98 @@ observeEvent(input$dates6120.2, {
                            "dates6120.2",
                            start = ymd(Sys.Date()),
                            end = ymd(Sys.Date()))
-      shinyalert("Диапазон дат не может быть пустым! Переход на текущую дату.",
+      showNotification("Диапазон дат не может быть пустым! Переход на текущую дату.",
                  type = "error")
     })
 }, ignoreInit = TRUE)
 
-observe({ if (!is.null(input$table6120.2Item1)) {
-    data$df6120.2 <- hot_to_r(input$table6120.2Item1) 
-
-    if (!any(is.na(input$dates6120.2)) && input$choices6120.2 == "Выбор по дате операции") {
-     	from=as.Date(input$dates6120.2[1L])
-      	to=as.Date(input$dates6120.2[2L])
-      	if (from>to) to = from
-      	selectdates6120.2_1 <- seq.Date(from=from, to=to, by = "day")
-      	data$df6120.2_2 <- data$df6120.2[as.Date(data$df6120.2$"Дата операции") %in% selectdates6120.2_1, ]
-    } else if (!is.null(input$text) && input$choices6120.2 == "Выбор по номеру первичного документа") {
-      	data$df6120.2_2 <- data$df6120.2[data$df6120.2$"Номер первичного документа" == input$text, ]
-    } else if (!is.null(input$text) && input$choices6120.2 == "Выбор по статье дохода") {
-      	data$df6120.2_2 <- data$df6120.2[data$df6120.2$"Счет № статьи дохода" == input$text, ]
-    } else if (!is.null(input$dates6120.2) && !any(is.na(input$dates6120.2)) && !is.null(input$text) && input$choices6120.2 == "Выбор по дате операции и номеру первичного документа") {
-     	from=as.Date(input$dates6120.2[1L])
-      	to=as.Date(input$dates6120.2[2L])
-      	if (from>to) to = from
-      	selectdates6120.2_2 <- seq.Date(from=from, to=to, by = "day")
-      	data$df6120.2_2 <- data$df6120.2[as.Date(data$df6120.2$"Дата операции") %in% selectdates6120.2_2 & data$df6120.2$"Номер первичного документа" == input$text, ]
-    } else if (!is.null(input$dates6120.2) && !any(is.na(input$dates6120.2)) && !is.null(input$text) && input$choices6120.2 == "Выбор по дате операции и статье дохода") {
-     	from=as.Date(input$dates6120.2[1L])
-      	to=as.Date(input$dates6120.2[2L])
-      	if (from>to) to = from
-      	selectdates6120.2_3 <- seq.Date(from=from, to=to, by = "day")
-      	data$df6120.2_2 <- data$df6120.2[as.Date(data$df6120.2$"Дата операции") %in% selectdates6120.2_3 & data$df6120.2$"Счет № статьи дохода" == input$text, ]
-    } else {
-        selectdates6120.2_4 <- unique(data$df6120.2$"Дата операции")
-        data$df6120.2_2 <- data$df6120.2[data$df6120.2$"Дата операции" %in% selectdates6120.2_4, ]
+filter_data_6120_2 <- throttle(
+  observe({ 
+    if (!is.null(data$df6120.2)) {
+      tryCatch({
+        if (!any(is.na(input$dates6120.2)) && input$choices6120.2 == "Выбор по дате операции") {
+          from=as.Date(input$dates6120.2[1L])
+          to=as.Date(input$dates6120.2[2L])
+          if (from>to) to = from
+          selectdates6120.2_1 <- seq.Date(from=from, to=to, by = "day")
+          data$df6120.2_2 <- data$df6120.2[as.Date(data$df6120.2$"Дата операции") %in% selectdates6120.2_1, ]
+        } else if (!is.null(input$text) && input$choices6120.2 == "Выбор по номеру первичного документа") {
+          data$df6120.2_2 <- data$df6120.2[data$df6120.2$"Номер первичного документа" == input$text, ]
+        } else if (!is.null(input$text) && input$choices6120.2 == "Выбор по статье дохода") {
+          data$df6120.2_2 <- data$df6120.2[data$df6120.2$"Счет № статьи дохода" == input$text, ]
+        } else if (!is.null(input$dates6120.2) && !any(is.na(input$dates6120.2)) && !is.null(input$text) && input$choices6120.2 == "Выбор по дате операции и номеру первичного документа") {
+          from=as.Date(input$dates6120.2[1L])
+          to=as.Date(input$dates6120.2[2L])
+          if (from>to) to = from
+          selectdates6120.2_2 <- seq.Date(from=from, to=to, by = "day")
+          data$df6120.2_2 <- data$df6120.2[as.Date(data$df6120.2$"Дата операции") %in% selectdates6120.2_2 & data$df6120.2$"Номер первичного документа" == input$text, ]
+        } else if (!is.null(input$dates6120.2) && !any(is.na(input$dates6120.2)) && !is.null(input$text) && input$choices6120.2 == "Выбор по дате операции и статье дохода") {
+          from=as.Date(input$dates6120.2[1L])
+          to=as.Date(input$dates6120.2[2L])
+          if (from>to) to = from
+          selectdates6120.2_3 <- seq.Date(from=from, to=to, by = "day")
+          data$df6120.2_2 <- data$df6120.2[as.Date(data$df6120.2$"Дата операции") %in% selectdates6120.2_3 & data$df6120.2$"Счет № статьи дохода" == input$text, ]
+        } else {
+          selectdates6120.2_4 <- unique(data$df6120.2$"Дата операции")
+          data$df6120.2_2 <- data$df6120.2[data$df6120.2$"Дата операции" %in% selectdates6120.2_4, ]
+        }
+      }, error = function(e) {
+        message("Error filtering data 6120.2: ", e$message)
+      })
     }
-}
-})
+  }), 500
+)
 
   output$table6120.2Item1 <- renderRHandsontable({
-    
-   data$df6120.2[, `Сальдо конечное` := data$df6120.2[[7]] + data$df6120.2[[8]] - data$df6120.2[[9]]]
-
-    rhandsontable(data$df6120.2, colWidths = 150, height = 300, allowInvalid=FALSE, fixedColumnsLeft = 2, manualColumnResize = TRUE) |>
-      hot_col(1, dateFormat = "YYYY-MM-DD", type = "date")
+    req(data$df6120.2)
+    tryCatch({
+      # Calculate final balance
+      if(nrow(data$df6120.2) > 0) {
+        data$df6120.2[, `Сальдо конечное` := data$df6120.2[[7]] + data$df6120.2[[8]] - data$df6120.2[[9]]]
+      }
+      
+      rhandsontable(data$df6120.2, colWidths = 150, height = 300, allowInvalid=FALSE, 
+                   fixedColumnsLeft = 2, manualColumnResize = TRUE) |>
+        hot_col(1, dateFormat = "YYYY-MM-DD", type = "date")
+    }, error = function(e) {
+      showNotification("Error rendering table 6120.2", type = "error")
+      NULL
+    })
   })
   
   output$nested_ui6120.2 <- renderUI({
     if (input$choices6120.2 == "Выбор по дате операции") {
-      	dateRangeInput("dates6120.2", "Выберите период времени:", format="yyyy-mm-dd",
-                     start = Sys.Date(), end = Sys.Date(), separator = "-")
+      dateRangeInput("dates6120.2", "Выберите период времени:", format="yyyy-mm-dd",
+                   start = Sys.Date(), end = Sys.Date(), separator = "-")
     } else if (input$choices6120.2 == "Выбор по номеру первичного документа") {
-      	textInput("text", "Укажите номер первичного документа:")
+      textInput("text", "Укажите номер первичного документа:")
     } else if (input$choices6120.2 == "Выбор по статье дохода") {
-      	textInput("text", "Укажите Счет № статьи дохода:")
+      textInput("text", "Укажите Счет № статьи дохода:")
     } else if (input$choices6120.2 == "Выбор по дате операции и номеру первичного документа") {
       fluidRow(
-       	dateRangeInput("dates6120.2", "Выберите период времени:",
-                       start = Sys.Date(), end = Sys.Date(), separator = "-"),
+        dateRangeInput("dates6120.2", "Выберите период времени:",
+                     start = Sys.Date(), end = Sys.Date(), separator = "-"),
         textInput("text", "Укажите номер первичного документа:")
       )
     } else if (input$choices6120.2 == "Выбор по дате операции и статье дохода") {
       fluidRow(
-       	dateRangeInput("dates6120.2", "Выберите период времени:",
-                       start = Sys.Date(), end = Sys.Date(), separator = "-"),
+        dateRangeInput("dates6120.2", "Выберите период времени:",
+                     start = Sys.Date(), end = Sys.Date(), separator = "-"),
         textInput("text", "Укажите Счет № статьи дохода:")
       )
     }
   })
 
   output$table6120.2Item2 <- renderRHandsontable({
-    rhandsontable(data$df6120.2_2, colWidths = 150, height = 300, readOnly=TRUE, contextMenu = FALSE, manualColumnResize = TRUE) |>
-      hot_col(1, dateFormat = "YYYY-MM-DD", type = "date")
+    req(data$df6120.2_2)
+    tryCatch({
+      rhandsontable(data$df6120.2_2, colWidths = 150, height = 300, readOnly=TRUE, 
+                   contextMenu = FALSE, manualColumnResize = TRUE) |>
+        hot_col(1, dateFormat = "YYYY-MM-DD", type = "date")
+    }, error = function(e) {
+      showNotification("Error rendering filtered table 6120.2", type = "error")
+      NULL
+    })
   })
 
   output$download_df6120.2 <- downloadHandler(
@@ -932,4 +1060,5 @@ observe({ if (!is.null(input$table6120.2Item1)) {
   })
 
 }
+
 shinyApp(ui, server)
