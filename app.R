@@ -10,128 +10,136 @@ library(openxlsx)
 library(DBI)
 library(RPostgres)
 library(pool)
+library(rsconnect)
+library(httr)
+library(jsonlite)
 
-# Database connection using connection pooling
-pool <- NULL
+# Database connection function using environment variables
+#Current Session ID: session_1762446162_2936
+
+connect_to_neon <- function() {
+  con <- dbConnect(
+    RPostgres::Postgres(),
+    host = Sys.getenv("NEON_HOST"),
+    port = as.numeric(Sys.getenv("NEON_PORT")),
+    dbname = Sys.getenv("NEON_DATABASE"),
+    user = Sys.getenv("NEON_USER"),
+    password = Sys.getenv("NEON_PASSWORD"),
+    sslmode = "require"
+  )
+  return(con)
+}
 
 # Initialize database tables
 initialize_database <- function() {
-  tryCatch({
-    if (is.null(pool)) return(FALSE)
-    
-    create_table_sql <- "
-    CREATE TABLE IF NOT EXISTS app_data_6120 (
-      id SERIAL PRIMARY KEY,
-      session_id VARCHAR(255),
-      account_name VARCHAR(500),
-      initial_balance NUMERIC,
-      debit NUMERIC,
-      credit NUMERIC,
-      final_balance NUMERIC,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );"
-    
-    create_table_sql_6120_1 <- "
-    CREATE TABLE IF NOT EXISTS app_data_6120_1 (
-      id SERIAL PRIMARY KEY,
-      session_id VARCHAR(255),
-      operation_date DATE,
-      document_number VARCHAR(255),
-      income_account VARCHAR(255),
-      dividend_period VARCHAR(255),
-      operation_description TEXT,
-      accounting_method VARCHAR(255),
-      initial_balance NUMERIC,
-      credit NUMERIC,
-      debit NUMERIC,
-      correspondence_debit VARCHAR(255),
-      correspondence_credit VARCHAR(255),
-      final_balance NUMERIC,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );"
-    
-    create_table_sql_6120_2 <- "
-    CREATE TABLE IF NOT EXISTS app_data_6120_2 (
-      id SERIAL PRIMARY KEY,
-      session_id VARCHAR(255),
-      operation_date DATE,
-      document_number VARCHAR(255),
-      income_account VARCHAR(255),
-      dividend_period VARCHAR(255),
-      operation_description TEXT,
-      accounting_method VARCHAR(255),
-      initial_balance NUMERIC,
-      credit NUMERIC,
-      debit NUMERIC,
-      correspondence_debit VARCHAR(255),
-      correspondence_credit VARCHAR(255),
-      final_balance NUMERIC,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );"
-    
-    dbExecute(pool, create_table_sql)
-    dbExecute(pool, create_table_sql_6120_1)
-    dbExecute(pool, create_table_sql_6120_2)
-    return(TRUE)
-  }, error = function(e) {
-    message("Database initialization error: ", e$message)
-    return(FALSE)
-  })
+  con <- connect_to_neon()
+  
+  # Create tables if they don't exist
+  create_table_sql <- "
+  CREATE TABLE IF NOT EXISTS app_data_6120 (
+    id SERIAL PRIMARY KEY,
+    session_id VARCHAR(255),
+    account_name VARCHAR(500),
+    initial_balance NUMERIC,
+    debit NUMERIC,
+    credit NUMERIC,
+    final_balance NUMERIC,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  );"
+  
+  create_table_sql_6120_1 <- "
+  CREATE TABLE IF NOT EXISTS app_data_6120_1 (
+    id SERIAL PRIMARY KEY,
+    session_id VARCHAR(255),
+    operation_date DATE,
+    document_number VARCHAR(255),
+    income_account VARCHAR(255),
+    dividend_period VARCHAR(255),
+    operation_description TEXT,
+    accounting_method VARCHAR(255),
+    initial_balance NUMERIC,
+    credit NUMERIC,
+    debit NUMERIC,
+    correspondence_debit VARCHAR(255),
+    correspondence_credit VARCHAR(255),
+    final_balance NUMERIC,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  );"
+  
+  create_table_sql_6120_2 <- "
+  CREATE TABLE IF NOT EXISTS app_data_6120_2 (
+    id SERIAL PRIMARY KEY,
+    session_id VARCHAR(255),
+    operation_date DATE,
+    document_number VARCHAR(255),
+    income_account VARCHAR(255),
+    dividend_period VARCHAR(255),
+    operation_description TEXT,
+    accounting_method VARCHAR(255),
+    initial_balance NUMERIC,
+    credit NUMERIC,
+    debit NUMERIC,
+    correspondence_debit VARCHAR(255),
+    correspondence_credit VARCHAR(255),
+    final_balance NUMERIC,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  );"
+  
+  dbExecute(con, create_table_sql)
+  dbExecute(con, create_table_sql_6120_1)
+  dbExecute(con, create_table_sql_6120_2)
+  dbDisconnect(con)
 }
 
 # Enhanced save data to Neon with automatic persistence
 save_data_to_neon <- function(data, table_name, session_id) {
   tryCatch({
-    if (is.null(pool)) return(FALSE)
+    con <- connect_to_neon()
     
     if (table_name == "app_data_6120") {
       # Clear previous session data for this specific session
-      dbExecute(pool, paste("DELETE FROM app_data_6120 WHERE session_id = $1"), list(session_id))
+      dbExecute(con, paste("DELETE FROM app_data_6120 WHERE session_id = $1"), list(session_id))
       
       # Insert new data
       for(i in 1:nrow(data)) {
-        dbExecute(pool, 
+        dbExecute(con, 
           "INSERT INTO app_data_6120 (session_id, account_name, initial_balance, debit, credit, final_balance) 
            VALUES ($1, $2, $3, $4, $5, $6)",
-          list(session_id, as.character(data[i, 1]), as.numeric(data[i, 2]), as.numeric(data[i, 3]), 
-               as.numeric(data[i, 4]), as.numeric(data[i, 5]))
+          list(session_id, data[i, 1], data[i, 2], data[i, 3], data[i, 4], data[i, 5])
         )
       }
     } else if (table_name == "app_data_6120_1") {
-      dbExecute(pool, paste("DELETE FROM app_data_6120_1 WHERE session_id = $1"), list(session_id))
+      dbExecute(con, paste("DELETE FROM app_data_6120_1 WHERE session_id = $1"), list(session_id))
       
       for(i in 1:nrow(data)) {
-        dbExecute(pool,
+        dbExecute(con,
           "INSERT INTO app_data_6120_1 (session_id, operation_date, document_number, income_account, 
            dividend_period, operation_description, accounting_method, initial_balance, credit, debit,
            correspondence_debit, correspondence_credit, final_balance)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
-          list(session_id, as.character(data[i, 1]), as.character(data[i, 2]), as.character(data[i, 3]), 
-               as.character(data[i, 4]), as.character(data[i, 5]), as.character(data[i, 6]),
-               as.numeric(data[i, 7]), as.numeric(data[i, 8]), as.numeric(data[i, 9]), 
-               as.character(data[i, 10]), as.character(data[i, 11]), as.numeric(data[i, 12]))
+          list(session_id, data[i, 1], data[i, 2], data[i, 3], data[i, 4], data[i, 5], data[i, 6],
+               data[i, 7], data[i, 8], data[i, 9], data[i, 10], data[i, 11], data[i, 12])
         )
       }
     } else if (table_name == "app_data_6120_2") {
-      dbExecute(pool, paste("DELETE FROM app_data_6120_2 WHERE session_id = $1"), list(session_id))
+      dbExecute(con, paste("DELETE FROM app_data_6120_2 WHERE session_id = $1"), list(session_id))
       
       for(i in 1:nrow(data)) {
-        dbExecute(pool,
+        dbExecute(con,
           "INSERT INTO app_data_6120_2 (session_id, operation_date, document_number, income_account, 
            dividend_period, operation_description, accounting_method, initial_balance, credit, debit,
            correspondence_debit, correspondence_credit, final_balance)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
-          list(session_id, as.character(data[i, 1]), as.character(data[i, 2]), as.character(data[i, 3]), 
-               as.character(data[i, 4]), as.character(data[i, 5]), as.character(data[i, 6]),
-               as.numeric(data[i, 7]), as.numeric(data[i, 8]), as.numeric(data[i, 9]), 
-               as.character(data[i, 10]), as.character(data[i, 11]), as.numeric(data[i, 12]))
+          list(session_id, data[i, 1], data[i, 2], data[i, 3], data[i, 4], data[i, 5], data[i, 6],
+               data[i, 7], data[i, 8], data[i, 9], data[i, 10], data[i, 11], data[i, 12])
         )
       }
     }
     
+    dbDisconnect(con)
     return(TRUE)
   }, error = function(e) {
     message("Error saving to Neon: ", e$message)
@@ -142,21 +150,18 @@ save_data_to_neon <- function(data, table_name, session_id) {
 # Enhanced load data from Neon with persistent session management
 load_data_from_neon <- function(table_name, session_id = NULL) {
   tryCatch({
-    if (is.null(pool)) {
-      message("Database pool is not available")
-      return(NULL)
-    }
+    con <- connect_to_neon()
     
     # If no session_id provided, load the most recent data
     if (is.null(session_id)) {
       if (table_name == "app_data_6120") {
-        result <- dbGetQuery(pool, 
+        result <- dbGetQuery(con, 
           "SELECT account_name, initial_balance, debit, credit, final_balance 
            FROM app_data_6120 
            WHERE session_id IN (SELECT session_id FROM app_data_6120 ORDER BY created_at DESC LIMIT 1)
            ORDER BY id")
       } else if (table_name == "app_data_6120_1") {
-        result <- dbGetQuery(pool,
+        result <- dbGetQuery(con,
           "SELECT operation_date, document_number, income_account, dividend_period, 
                   operation_description, accounting_method, initial_balance, credit, debit,
                   correspondence_debit, correspondence_credit, final_balance
@@ -164,7 +169,7 @@ load_data_from_neon <- function(table_name, session_id = NULL) {
            WHERE session_id IN (SELECT session_id FROM app_data_6120_1 ORDER BY created_at DESC LIMIT 1)
            ORDER BY id")
       } else if (table_name == "app_data_6120_2") {
-        result <- dbGetQuery(pool,
+        result <- dbGetQuery(con,
           "SELECT operation_date, document_number, income_account, dividend_period, 
                   operation_description, accounting_method, initial_balance, credit, debit,
                   correspondence_debit, correspondence_credit, final_balance
@@ -175,14 +180,14 @@ load_data_from_neon <- function(table_name, session_id = NULL) {
     } else {
       # Load data for specific session_id
       if (table_name == "app_data_6120") {
-        result <- dbGetQuery(pool, 
+        result <- dbGetQuery(con, 
           "SELECT account_name, initial_balance, debit, credit, final_balance 
            FROM app_data_6120 
            WHERE session_id = $1 
            ORDER BY id", 
           list(session_id))
       } else if (table_name == "app_data_6120_1") {
-        result <- dbGetQuery(pool,
+        result <- dbGetQuery(con,
           "SELECT operation_date, document_number, income_account, dividend_period, 
                   operation_description, accounting_method, initial_balance, credit, debit,
                   correspondence_debit, correspondence_credit, final_balance
@@ -191,7 +196,7 @@ load_data_from_neon <- function(table_name, session_id = NULL) {
            ORDER BY id",
           list(session_id))
       } else if (table_name == "app_data_6120_2") {
-        result <- dbGetQuery(pool,
+        result <- dbGetQuery(con,
           "SELECT operation_date, document_number, income_account, dividend_period, 
                   operation_description, accounting_method, initial_balance, credit, debit,
                   correspondence_debit, correspondence_credit, final_balance
@@ -202,6 +207,7 @@ load_data_from_neon <- function(table_name, session_id = NULL) {
       }
     }
     
+    dbDisconnect(con)
     return(result)
   }, error = function(e) {
     message("Error loading from Neon: ", e$message)
@@ -212,9 +218,8 @@ load_data_from_neon <- function(table_name, session_id = NULL) {
 # Get all available sessions for data retrieval
 get_available_sessions <- function() {
   tryCatch({
-    if (is.null(pool)) return(NULL)
-    
-    sessions <- dbGetQuery(pool, 
+    con <- connect_to_neon()
+    sessions <- dbGetQuery(con, 
       "SELECT DISTINCT session_id, MAX(created_at) as last_updated 
        FROM (
          SELECT session_id, created_at FROM app_data_6120
@@ -225,6 +230,7 @@ get_available_sessions <- function() {
        ) AS combined 
        GROUP BY session_id 
        ORDER BY last_updated DESC")
+    dbDisconnect(con)
     return(sessions$session_id)
   }, error = function(e) {
     message("Error getting sessions: ", e$message)
@@ -341,23 +347,6 @@ ui <- fluidPage(
               margin-left: 230px;
           }
         }
-        /* Fix for blurring interface */
-        .content-wrapper, .right-side { 
-          -webkit-font-smoothing: antialiased;
-          -webkit-transform: translateZ(0);
-          transform: translateZ(0);
-        }
-        .rhandsontable {
-          transform: translateZ(0);
-          backface-visibility: hidden;
-          perspective: 1000;
-        }
-        .dataTables_wrapper {
-          transform: translateZ(0);
-        }
-        .box {
-          transform: translateZ(0);
-        }
       '),
       tabItems(
         tabItem(tabName = "home",
@@ -369,8 +358,7 @@ ui <- fluidPage(
                       actionButton("save_session_btn", "Save Current Session"),
                       actionButton("new_session_btn", "Start New Session"),
                       br(),
-                      textOutput("current_session_info"),
-                      textOutput("db_status")  # Connection status
+                      textOutput("current_session_info")
                   )
                 )
         ),
@@ -451,73 +439,11 @@ ui <- fluidPage(
  )
 
 server = function(input, output, session) {
-  # Initialize connection pool
-  observe({
-    tryCatch({
-      # Check environment variables
-      required_vars <- c("NEON_HOST", "NEON_PORT", "NEON_DATABASE", "NEON_USER", "NEON_PASSWORD")
-      missing_vars <- required_vars[!sapply(required_vars, function(x) nzchar(Sys.getenv(x)))]
-      
-      if (length(missing_vars) > 0) {
-        message("Missing environment variables: ", paste(missing_vars, collapse = ", "))
-        shinyalert("Configuration Error", 
-                   paste("Missing environment variables:", paste(missing_vars, collapse = ", ")), 
-                   type = "error")
-        return(NULL)
-      }
-      
-      # Create connection pool
-      pool <<- dbPool(
-        drv = RPostgres::Postgres(),
-        host = Sys.getenv("NEON_HOST"),
-        port = as.numeric(Sys.getenv("NEON_PORT")),
-        dbname = Sys.getenv("NEON_DATABASE"),
-        user = Sys.getenv("NEON_USER"),
-        password = Sys.getenv("NEON_PASSWORD"),
-        sslmode = "require",
-        minSize = 1,
-        maxSize = 5,
-        idleTimeout = 300000, # 5 minutes
-        validationInterval = 30000, # 30 seconds
-        connect_timeout = 10
-      )
-      
-      # Test connection
-      dbGetQuery(pool, "SELECT 1")
-      message("Database pool connected successfully")
-      
-      # Initialize database tables
-      initialize_database()
-      
-    }, error = function(e) {
-      message("Pool connection failed: ", e$message)
-      shinyalert("Database Error", paste("Failed to connect to database:", e$message), type = "error")
-    })
-  })
-  
-  # Close pool on app stop
-  onStop(function() {
-    if (!is.null(pool)) {
-      poolClose(pool)
-    }
-  })
-  
-  # Database connection status
-  output$db_status <- renderText({
-    if (is.null(pool)) {
-      return("Database status: Disconnected")
-    } else {
-      tryCatch({
-        dbGetQuery(pool, "SELECT 1")
-        return("Database status: Connected")
-      }, error = function(e) {
-        return(paste("Database status: Error -", e$message))
-      })
-    }
-  })
-  
   # Generate a unique session ID that persists
   session_id <- reactiveVal(paste0("session_", as.integer(Sys.time()), "_", sample(1000:9999, 1)))
+  
+  # Initialize database on app start
+  initialize_database()
   
   r <- reactiveValues(
     start = ymd(Sys.Date()),
@@ -628,14 +554,14 @@ server = function(input, output, session) {
     data$df6120.2_2 <- as.data.table(DF6120.2_2)
   })
 
-  # Optimized auto-save data when tables are modified with debouncing
+  # Auto-save data when tables are modified with debouncing
   auto_save_6120 <- debounce(
     observe({
       if(!is.null(input$table6120Item1) && !is.null(data$df6120)) {
         data$df6120 <- hot_to_r(input$table6120Item1)
         save_data_to_neon(data$df6120, "app_data_6120", session_id())
       }
-    }), 3000) # Increased to 3 second delay
+    }), 2000) # 2 second delay
 
   auto_save_6120_1 <- debounce(
     observe({
@@ -643,7 +569,7 @@ server = function(input, output, session) {
         data$df6120.1 <- hot_to_r(input$table6120.1Item1)
         save_data_to_neon(data$df6120.1, "app_data_6120_1", session_id())
       }
-    }), 3000)
+    }), 2000)
 
   auto_save_6120_2 <- debounce(
     observe({
@@ -651,7 +577,7 @@ server = function(input, output, session) {
         data$df6120.2 <- hot_to_r(input$table6120.2Item1)
         save_data_to_neon(data$df6120.2, "app_data_6120_2", session_id())
       }
-    }), 3000)
+    }), 2000)
 
   # Initialize data if not already set
   observe({
@@ -663,24 +589,20 @@ server = function(input, output, session) {
   })
 
 #*****************************
-  # Throttled table updates to prevent excessive rendering
-  table_update_6120 <- throttle(
-    observe({
-      if(!is.null(input$table6120Item1))
-        data$df6120 <- hot_to_r(input$table6120Item1)
-    }), 1000)
+  observe({
+    if(!is.null(input$table6120Item1))
+      data$df6120 <- hot_to_r(input$table6120Item1)
+  })
 
-  table_update_6120_1 <- throttle(
-    observe({
-      if(!is.null(input$table6120.1Item1))
-        data$df6120.1 <- hot_to_r(input$table6120.1Item1)
-    }), 1000)
+  observe({
+    if(!is.null(input$table6120.1Item1))
+      data$df6120.1 <- hot_to_r(input$table6120.1Item1)
+  })
 
-  table_update_6120_2 <- throttle(
-    observe({
-      if(!is.null(input$table6120.2Item1))
-        data$df6120.2 <- hot_to_r(input$table6120.2Item1)
-    }), 1000)
+  observe({
+    if(!is.null(input$table6120.2Item1))
+      data$df6120.2 <- hot_to_r(input$table6120.2Item1)
+  })
 
 #*****************************************
 
@@ -713,9 +635,7 @@ observeEvent(input$dates6120, {
     })
  }, ignoreInit = TRUE)
 
-# Throttled date filtering
-filter_dates_6120_1 <- throttle(
-  observe({
+observe({
     if (!any(is.na(input$dates6120))) {
       from=as.Date(input$dates6120[1L])
       to=as.Date(input$dates6120[2L])
@@ -727,10 +647,9 @@ filter_dates_6120_1 <- throttle(
       selectdates6120.1_6 <- unique(as.Date(data$df6120.1$`Дата операции`))
       data$df6120.1_1 <- data$df6120.1[data$df6120.1$`Дата операции` %in% selectdates6120.1_6, ]
     }
-  }), 500)
+  })
 
-filter_dates_6120_2 <- throttle(
-  observe({
+observe({
     if (!any(is.na(input$dates6120))) {
       from=as.Date(input$dates6120[1L])
       to=as.Date(input$dates6120[2L])
@@ -742,41 +661,37 @@ filter_dates_6120_2 <- throttle(
       selectdates6120.2_6 <- unique(as.Date(data$df6120.2$`Дата операции`))
       data$df6120.2_1 <- data$df6120.2[data$df6120.2$`Дата операции` %in% selectdates6120.2_6, ]
     }
-  }), 500)
+  })
 
-# Throttled summary calculations
-update_summary_6120 <- throttle(
-  observe({
-    if(!is.null(data$df6120.1_1) && nrow(data$df6120.1_1) > 0) {
-      data$df6120[1, 2:5] <- data$df6120.1_1[, list(
-        `Сальдо начальное` = sum(`Сальдо начальное`[1L], na.rm = TRUE),
-        Кредит = sum(`Кредит`, na.rm = TRUE),
-        Дебет = sum(`Дебет`, na.rm = TRUE),
-        `Сальдо конечное` = sum(`Сальдо конечное`[.N], na.rm = TRUE)
-      ), by="Номер первичного документа"][, .(
-        `Сальдо начальное` = sum(`Сальдо начальное`),
-        Дебет = sum(Дебет),
-        Кредит = sum(Кредит),
-        `Сальдо конечное` = sum(`Сальдо конечное`)
-      )]
-    }
-    
-    if(!is.null(data$df6120.2_1) && nrow(data$df6120.2_1) > 0) {
-      data$df6120[2, 2:5] <- data$df6120.2_1[, list(
-        `Сальдо начальное` = sum(`Сальдо начальное`[1L], na.rm = TRUE),
-        Кредит = sum(`Кредит`, na.rm = TRUE),
-        Дебет = sum(`Дебет`, na.rm = TRUE),
-        `Сальдо конечное` = sum(`Сальдо конечное`[.N], na.rm = TRUE)
-      ), by="Номер первичного документа"][, .(
-        `Сальдо начальное` = sum(`Сальдо начальное`),
-        Дебет = sum(Дебет),
-        Кредит = sum(Кредит),
-        `Сальдо конечное` = sum(`Сальдо конечное`)
-      )]
-    }
-    
-    data$df6120[3, 2:5] <- data$df6120[, .SD[1:2, lapply(.SD, sum)], .SDcols = 2:5]
-  }), 1000)
+observe({
+  data$df6120[1, 2:5] <- data$df6120.1_1[, list(
+    `Сальдо начальное` = sum(`Сальдо начальное`[1L], na.rm = TRUE),
+    Кредит = sum(`Кредит`, na.rm = TRUE),
+    Дебет = sum(`Дебет`, na.rm = TRUE),
+    `Сальдо конечное` = sum(`Сальдо конечное`[.N], na.rm = TRUE)
+  ), by="Номер первичного документа"][, .(
+    `Сальдо начальное` = sum(`Сальдо начальное`),
+    Дебет = sum(Дебет),
+    Кредит = sum(Кредит),
+    `Сальдо конечное` = sum(`Сальдо конечное`)
+  )]
+})
+
+observe({
+  data$df6120[2, 2:5] <- data$df6120.2_1[, list(
+    `Сальдо начальное` = sum(`Сальдо начальное`[1L], na.rm = TRUE),
+    Кредит = sum(`Кредит`, na.rm = TRUE),
+    Дебет = sum(`Дебет`, na.rm = TRUE),
+    `Сальдо конечное` = sum(`Сальдо конечное`[.N], na.rm = TRUE)
+  ), by="Номер первичного документа"][, .(
+    `Сальдо начальное` = sum(`Сальдо начальное`),
+    Дебет = sum(Дебет),
+    Кредит = sum(Кредит),
+    `Сальдо конечное` = sum(`Сальдо конечное`)
+  )]
+})
+
+observe({ data$df6120[3, 2:5] <- data$df6120[, .SD[1:2, lapply(.SD, sum)], .SDcols = 2:5] })
 
   output$nested_ui6120 <- renderUI({!any(is.na(input$dates6120))})
 
@@ -826,38 +741,37 @@ observeEvent(input$dates6120.1, {
     })
 }, ignoreInit = TRUE)
 
-# Throttled filtering for 6120.1
-filter_data_6120_1 <- throttle(
-  observe({ 
-    if (!is.null(data$df6120.1)) {
-      if (!any(is.na(input$dates6120.1)) && input$choices6120.1 == "Выбор по дате операции") {
-        from=as.Date(input$dates6120.1[1L])
-        to=as.Date(input$dates6120.1[2L])
-        if (from>to) to = from
-        selectdates6120.1_1 <- seq.Date(from=from, to=to, by = "day")
-        data$df6120.1_2 <- data$df6120.1[as.Date(data$df6120.1$"Дата операции") %in% selectdates6120.1_1, ]
-      } else if (!is.null(input$text) && input$choices6120.1 == "Выбор по номеру первичного документа") {
-        data$df6120.1_2 <- data$df6120.1[data$df6120.1$"Номер первичного документа" == input$text, ]
-      } else if (!is.null(input$text) && input$choices6120.1 == "Выбор по статье дохода") {
-        data$df6120.1_2 <- data$df6120.1[data$df6120.1$"Счет № статьи дохода" == input$text, ]
-      } else if (!is.null(input$dates6120.1) && !any(is.na(input$dates6120.1)) && !is.null(input$text) && input$choices6120.1 == "Выбор по дате операции и номеру первичного документа") {
-        from=as.Date(input$dates6120.1[1L])
-        to=as.Date(input$dates6120.1[2L])
-        if (from>to) to = from
-        selectdates6120.1_2 <- seq.Date(from=from, to=to, by = "day")
-        data$df6120.1_2 <- data$df6120.1[as.Date(data$df6120.1$"Дата операции") %in% selectdates6120.1_2 & data$df6120.1$"Номер первичного документа" == input$text, ]
-      } else if (!is.null(input$dates6120.1) && !any(is.na(input$dates6120.1)) && !is.null(input$text) && input$choices6120.1 == "Выбор по дате операции и статье дохода") {
-        from=as.Date(input$dates6120.1[1L])
-        to=as.Date(input$dates6120.1[2L])
-        if (from>to) to = from
-        selectdates6120.1_3 <- seq.Date(from=from, to=to, by = "day")
-        data$df6120.1_2 <- data$df6120.1[as.Date(data$df6120.1$"Дата операции") %in% selectdates6120.1_3 & data$df6120.1$"Счет № статьи дохода" == input$text, ]
-      } else {
+observe({ if (!is.null(input$table6120.1Item1)) {
+    data$df6120.1 <- hot_to_r(input$table6120.1Item1) 
+
+    if (!any(is.na(input$dates6120.1)) && input$choices6120.1 == "Выбор по дате операции") {
+     	from=as.Date(input$dates6120.1[1L])
+      	to=as.Date(input$dates6120.1[2L])
+      	if (from>to) to = from
+      	selectdates6120.1_1 <- seq.Date(from=from, to=to, by = "day")
+      	data$df6120.1_2 <- data$df6120.1[as.Date(data$df6120.1$"Дата операции") %in% selectdates6120.1_1, ]
+    } else if (!is.null(input$text) && input$choices6120.1 == "Выбор по номеру первичного документа") {
+      	data$df6120.1_2 <- data$df6120.1[data$df6120.1$"Номер первичного документа" == input$text, ]
+    } else if (!is.null(input$text) && input$choices6120.1 == "Выбор по статье дохода") {
+      	data$df6120.1_2 <- data$df6120.1[data$df6120.1$"Счет № статьи дохода" == input$text, ]
+    } else if (!is.null(input$dates6120.1) && !any(is.na(input$dates6120.1)) && !is.null(input$text) && input$choices6120.1 == "Выбор по дате операции и номеру первичного документа") {
+     	from=as.Date(input$dates6120.1[1L])
+      	to=as.Date(input$dates6120.1[2L])
+      	if (from>to) to = from
+      	selectdates6120.1_2 <- seq.Date(from=from, to=to, by = "day")
+      	data$df6120.1_2 <- data$df6120.1[as.Date(data$df6120.1$"Дата операции") %in% selectdates6120.1_2 & data$df6120.1$"Номер первичного документа" == input$text, ]
+    } else if (!is.null(input$dates6120.1) && !any(is.na(input$dates6120.1)) && !is.null(input$text) && input$choices6120.1 == "Выбор по дате операции и статье дохода") {
+     	from=as.Date(input$dates6120.1[1L])
+      	to=as.Date(input$dates6120.1[2L])
+      	if (from>to) to = from
+      	selectdates6120.1_3 <- seq.Date(from=from, to=to, by = "day")
+      	data$df6120.1_2 <- data$df6120.1[as.Date(data$df6120.1$"Дата операции") %in% selectdates6120.1_3 & data$df6120.1$"Счет № статьи дохода" == input$text, ]
+    } else {
         selectdates6120.1_4 <- unique(data$df6120.1$"Дата операции")
         data$df6120.1_2 <- data$df6120.1[data$df6120.1$"Дата операции" %in% selectdates6120.1_4, ]
-      }
     }
-  }), 500)
+}
+})
 
   output$table6120.1Item1 <- renderRHandsontable({
     
@@ -938,38 +852,37 @@ observeEvent(input$dates6120.2, {
     })
 }, ignoreInit = TRUE)
 
-# Throttled filtering for 6120.2
-filter_data_6120_2 <- throttle(
-  observe({ 
-    if (!is.null(data$df6120.2)) {
-      if (!any(is.na(input$dates6120.2)) && input$choices6120.2 == "Выбор по дате операции") {
-        from=as.Date(input$dates6120.2[1L])
-        to=as.Date(input$dates6120.2[2L])
-        if (from>to) to = from
-        selectdates6120.2_1 <- seq.Date(from=from, to=to, by = "day")
-        data$df6120.2_2 <- data$df6120.2[as.Date(data$df6120.2$"Дата операции") %in% selectdates6120.2_1, ]
-      } else if (!is.null(input$text) && input$choices6120.2 == "Выбор по номеру первичного документа") {
-        data$df6120.2_2 <- data$df6120.2[data$df6120.2$"Номер первичного документа" == input$text, ]
-      } else if (!is.null(input$text) && input$choices6120.2 == "Выбор по статье дохода") {
-        data$df6120.2_2 <- data$df6120.2[data$df6120.2$"Счет № статьи дохода" == input$text, ]
-      } else if (!is.null(input$dates6120.2) && !any(is.na(input$dates6120.2)) && !is.null(input$text) && input$choices6120.2 == "Выбор по дате операции и номеру первичного документа") {
-        from=as.Date(input$dates6120.2[1L])
-        to=as.Date(input$dates6120.2[2L])
-        if (from>to) to = from
-        selectdates6120.2_2 <- seq.Date(from=from, to=to, by = "day")
-        data$df6120.2_2 <- data$df6120.2[as.Date(data$df6120.2$"Дата операции") %in% selectdates6120.2_2 & data$df6120.2$"Номер первичного документа" == input$text, ]
-      } else if (!is.null(input$dates6120.2) && !any(is.na(input$dates6120.2)) && !is.null(input$text) && input$choices6120.2 == "Выбор по дате операции и статье дохода") {
-        from=as.Date(input$dates6120.2[1L])
-        to=as.Date(input$dates6120.2[2L])
-        if (from>to) to = from
-        selectdates6120.2_3 <- seq.Date(from=from, to=to, by = "day")
-        data$df6120.2_2 <- data$df6120.2[as.Date(data$df6120.2$"Дата операции") %in% selectdates6120.2_3 & data$df6120.2$"Счет № статьи дохода" == input$text, ]
-      } else {
+observe({ if (!is.null(input$table6120.2Item1)) {
+    data$df6120.2 <- hot_to_r(input$table6120.2Item1) 
+
+    if (!any(is.na(input$dates6120.2)) && input$choices6120.2 == "Выбор по дате операции") {
+     	from=as.Date(input$dates6120.2[1L])
+      	to=as.Date(input$dates6120.2[2L])
+      	if (from>to) to = from
+      	selectdates6120.2_1 <- seq.Date(from=from, to=to, by = "day")
+      	data$df6120.2_2 <- data$df6120.2[as.Date(data$df6120.2$"Дата операции") %in% selectdates6120.2_1, ]
+    } else if (!is.null(input$text) && input$choices6120.2 == "Выбор по номеру первичного документа") {
+      	data$df6120.2_2 <- data$df6120.2[data$df6120.2$"Номер первичного документа" == input$text, ]
+    } else if (!is.null(input$text) && input$choices6120.2 == "Выбор по статье дохода") {
+      	data$df6120.2_2 <- data$df6120.2[data$df6120.2$"Счет № статьи дохода" == input$text, ]
+    } else if (!is.null(input$dates6120.2) && !any(is.na(input$dates6120.2)) && !is.null(input$text) && input$choices6120.2 == "Выбор по дате операции и номеру первичного документа") {
+     	from=as.Date(input$dates6120.2[1L])
+      	to=as.Date(input$dates6120.2[2L])
+      	if (from>to) to = from
+      	selectdates6120.2_2 <- seq.Date(from=from, to=to, by = "day")
+      	data$df6120.2_2 <- data$df6120.2[as.Date(data$df6120.2$"Дата операции") %in% selectdates6120.2_2 & data$df6120.2$"Номер первичного документа" == input$text, ]
+    } else if (!is.null(input$dates6120.2) && !any(is.na(input$dates6120.2)) && !is.null(input$text) && input$choices6120.2 == "Выбор по дате операции и статье дохода") {
+     	from=as.Date(input$dates6120.2[1L])
+      	to=as.Date(input$dates6120.2[2L])
+      	if (from>to) to = from
+      	selectdates6120.2_3 <- seq.Date(from=from, to=to, by = "day")
+      	data$df6120.2_2 <- data$df6120.2[as.Date(data$df6120.2$"Дата операции") %in% selectdates6120.2_3 & data$df6120.2$"Счет № статьи дохода" == input$text, ]
+    } else {
         selectdates6120.2_4 <- unique(data$df6120.2$"Дата операции")
         data$df6120.2_2 <- data$df6120.2[data$df6120.2$"Дата операции" %in% selectdates6120.2_4, ]
-      }
     }
-  }), 500)
+}
+})
 
   output$table6120.2Item1 <- renderRHandsontable({
     
