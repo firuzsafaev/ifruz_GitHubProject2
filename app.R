@@ -315,360 +315,186 @@ initialize_database <- function() {
   })
 }
 
-# Enhanced save data function with transaction and batch processing
+# OPTIMIZED: Save data function with improved performance and connection handling
 save_data_to_neon <- function(data, table_name, session_id) {
   if (is.null(data) || nrow(data) == 0) {
     message("No data to save for table: ", table_name)
     return(FALSE)
   }
   
-  if (!initialize_database_connection()) {
+  # Use simple connection for save operations to avoid pool conflicts
+  conn <- create_simple_connection()
+  if (is.null(conn)) {
     message("No database connection available for save operation")
     return(FALSE)
   }
   
-  # If pool is not available, try simple connection
-  if (is.null(global_pool)) {
-    message("No pool available, trying simple connection for save operation")
-    simple_conn <- create_simple_connection()
-    if (is.null(simple_conn)) {
-      message("Simple connection also failed for save operation")
-      return(FALSE)
+  tryCatch({
+    # Start transaction
+    dbExecute(conn, "BEGIN")
+    
+    # Clear previous session data for this table
+    delete_sql <- paste("DELETE FROM", table_name, "WHERE session_id = $1")
+    deleted_rows <- dbExecute(conn, delete_sql, list(session_id))
+    message("Deleted ", deleted_rows, " previous rows for session ", session_id, " in table ", table_name)
+    
+    # Prepare and execute batch insert
+    if (table_name == "app_data_6120") {
+      sql <- paste("INSERT INTO", table_name, 
+                   "(session_id, account_name, initial_balance, debit, credit, final_balance) 
+                   VALUES ($1, $2, $3, $4, $5, $6)")
+      
+      # Use parameterized batch insert
+      for(i in 1:nrow(data)) {
+        dbExecute(conn, sql, list(
+          session_id, 
+          as.character(data[i, 1]), 
+          as.numeric(data[i, 2] %||% 0), 
+          as.numeric(data[i, 3] %||% 0), 
+          as.numeric(data[i, 4] %||% 0), 
+          as.numeric(data[i, 5] %||% 0)
+        ))
+      }
+    } else if (table_name %in% c("app_data_6120_1", "app_data_6120_2")) {
+      sql <- paste("INSERT INTO", table_name, 
+                   "(session_id, operation_date, document_number, income_account, 
+                   dividend_period, operation_description, accounting_method, 
+                   initial_balance, credit, debit, correspondence_debit, 
+                   correspondence_credit, final_balance)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)")
+      
+      for(i in 1:nrow(data)) {
+        dbExecute(conn, sql, list(
+          session_id,
+          as.character(data[i, 1] %||% NA),
+          as.character(data[i, 2] %||% NA),
+          as.character(data[i, 3] %||% NA),
+          as.character(data[i, 4] %||% NA),
+          as.character(data[i, 5] %||% NA),
+          as.character(data[i, 6] %||% NA),
+          as.numeric(data[i, 7] %||% 0),
+          as.numeric(data[i, 8] %||% 0),
+          as.numeric(data[i, 9] %||% 0),
+          as.character(data[i, 10] %||% NA),
+          as.character(data[i, 11] %||% NA),
+          as.numeric(data[i, 12] %||% 0)
+        ))
+      }
     }
     
+    # Commit transaction
+    dbExecute(conn, "COMMIT")
+    message("Successfully saved ", nrow(data), " rows to table ", table_name, " for session ", session_id)
+    return(TRUE)
+    
+  }, error = function(e) {
+    # Rollback on error
     tryCatch({
-      # Start transaction
-      dbExecute(simple_conn, "BEGIN")
-      
-      # Clear previous session data for this table
-      delete_sql <- paste("DELETE FROM", table_name, "WHERE session_id = $1")
-      deleted_rows <- dbExecute(simple_conn, delete_sql, list(session_id))
-      message("Deleted ", deleted_rows, " previous rows for session ", session_id, " in table ", table_name)
-      
-      # Prepare and execute batch insert
-      if (table_name == "app_data_6120") {
-        sql <- paste("INSERT INTO", table_name, 
-                     "(session_id, account_name, initial_balance, debit, credit, final_balance) 
-                     VALUES ($1, $2, $3, $4, $5, $6)")
-        
-        for(i in 1:nrow(data)) {
-          dbExecute(simple_conn, sql, list(
-            session_id, 
-            as.character(data[i, 1]), 
-            as.numeric(data[i, 2] %||% 0), 
-            as.numeric(data[i, 3] %||% 0), 
-            as.numeric(data[i, 4] %||% 0), 
-            as.numeric(data[i, 5] %||% 0)
-          ))
-        }
-      } else if (table_name %in% c("app_data_6120_1", "app_data_6120_2")) {
-        sql <- paste("INSERT INTO", table_name, 
-                     "(session_id, operation_date, document_number, income_account, 
-                     dividend_period, operation_description, accounting_method, 
-                     initial_balance, credit, debit, correspondence_debit, 
-                     correspondence_credit, final_balance)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)")
-        
-        for(i in 1:nrow(data)) {
-          dbExecute(simple_conn, sql, list(
-            session_id,
-            as.character(data[i, 1] %||% NA),
-            as.character(data[i, 2] %||% NA),
-            as.character(data[i, 3] %||% NA),
-            as.character(data[i, 4] %||% NA),
-            as.character(data[i, 5] %||% NA),
-            as.character(data[i, 6] %||% NA),
-            as.numeric(data[i, 7] %||% 0),
-            as.numeric(data[i, 8] %||% 0),
-            as.numeric(data[i, 9] %||% 0),
-            as.character(data[i, 10] %||% NA),
-            as.character(data[i, 11] %||% NA),
-            as.numeric(data[i, 12] %||% 0)
-          ))
-        }
-      }
-      
-      # Commit transaction
-      dbExecute(simple_conn, "COMMIT")
-      message("Successfully saved ", nrow(data), " rows to table ", table_name, " for session ", session_id)
-      return(TRUE)
-      
-    }, error = function(e) {
-      # Rollback on error
-      tryCatch({
-        dbExecute(simple_conn, "ROLLBACK")
-      }, error = function(rollback_e) {
-        message("Rollback failed: ", rollback_e$message)
-      })
-      message("Error saving to Neon for table ", table_name, ": ", e$message)
-      return(FALSE)
-    }, finally = {
-      dbDisconnect(simple_conn)
+      dbExecute(conn, "ROLLBACK")
+    }, error = function(rollback_e) {
+      message("Rollback failed: ", rollback_e$message)
     })
-  } else {
-    # Use connection pool
-    tryCatch({
-      conn <- poolCheckout(global_pool)
-      on.exit(poolReturn(conn))
-      
-      # Start transaction
-      dbExecute(conn, "BEGIN")
-      
-      # Clear previous session data for this table
-      delete_sql <- paste("DELETE FROM", table_name, "WHERE session_id = $1")
-      deleted_rows <- dbExecute(conn, delete_sql, list(session_id))
-      message("Deleted ", deleted_rows, " previous rows for session ", session_id, " in table ", table_name)
-      
-      # Prepare and execute batch insert
-      if (table_name == "app_data_6120") {
-        sql <- paste("INSERT INTO", table_name, 
-                     "(session_id, account_name, initial_balance, debit, credit, final_balance) 
-                     VALUES ($1, $2, $3, $4, $5, $6)")
-        
-        for(i in 1:nrow(data)) {
-          dbExecute(conn, sql, list(
-            session_id, 
-            as.character(data[i, 1]), 
-            as.numeric(data[i, 2] %||% 0), 
-            as.numeric(data[i, 3] %||% 0), 
-            as.numeric(data[i, 4] %||% 0), 
-            as.numeric(data[i, 5] %||% 0)
-          ))
-        }
-      } else if (table_name %in% c("app_data_6120_1", "app_data_6120_2")) {
-        sql <- paste("INSERT INTO", table_name, 
-                     "(session_id, operation_date, document_number, income_account, 
-                     dividend_period, operation_description, accounting_method, 
-                     initial_balance, credit, debit, correspondence_debit, 
-                     correspondence_credit, final_balance)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)")
-        
-        for(i in 1:nrow(data)) {
-          dbExecute(conn, sql, list(
-            session_id,
-            as.character(data[i, 1] %||% NA),
-            as.character(data[i, 2] %||% NA),
-            as.character(data[i, 3] %||% NA),
-            as.character(data[i, 4] %||% NA),
-            as.character(data[i, 5] %||% NA),
-            as.character(data[i, 6] %||% NA),
-            as.numeric(data[i, 7] %||% 0),
-            as.numeric(data[i, 8] %||% 0),
-            as.numeric(data[i, 9] %||% 0),
-            as.character(data[i, 10] %||% NA),
-            as.character(data[i, 11] %||% NA),
-            as.numeric(data[i, 12] %||% 0)
-          ))
-        }
-      }
-      
-      # Commit transaction
-      dbExecute(conn, "COMMIT")
-      message("Successfully saved ", nrow(data), " rows to table ", table_name, " for session ", session_id)
-      return(TRUE)
-      
-    }, error = function(e) {
-      # Rollback on error
-      tryCatch({
-        conn <- poolCheckout(global_pool)
-        dbExecute(conn, "ROLLBACK")
-        poolReturn(conn)
-      }, error = function(rollback_e) {
-        message("Rollback failed: ", rollback_e$message)
-      })
-      message("Error saving to Neon for table ", table_name, ": ", e$message)
-      return(FALSE)
-    })
-  }
+    message("Error saving to Neon for table ", table_name, ": ", e$message)
+    return(FALSE)
+  }, finally = {
+    # Always close connection
+    try(dbDisconnect(conn), silent = TRUE)
+  })
 }
 
-# Enhanced load data function with better error handling
+# OPTIMIZED: Load data function with better performance and error handling
 load_data_from_neon <- function(table_name, session_id = NULL) {
-  if (!initialize_database_connection()) {
+  # Use simple connection for load operations
+  conn <- create_simple_connection()
+  if (is.null(conn)) {
     message("No database connection available for load operation")
     return(NULL)
   }
   
-  # If pool is not available, try simple connection
-  if (is.null(global_pool)) {
-    message("No pool available, trying simple connection for load operation")
-    simple_conn <- create_simple_connection()
-    if (is.null(simple_conn)) {
-      message("Simple connection also failed for load operation")
+  tryCatch({
+    if (is.null(session_id)) {
+      # Load most recent session data
+      session_query <- paste("SELECT DISTINCT session_id FROM", table_name, 
+                            "ORDER BY created_at DESC LIMIT 1")
+      recent_session <- dbGetQuery(conn, session_query)
+      
+      if (nrow(recent_session) == 0) {
+        message("No data found in table: ", table_name)
+        return(NULL)
+      }
+      
+      session_id <- recent_session$session_id[1]
+      message("Loading most recent session: ", session_id, " from table: ", table_name)
+    }
+    
+    # Load data for specific session
+    if (table_name == "app_data_6120") {
+      result <- dbGetQuery(conn, 
+        "SELECT account_name, initial_balance, debit, credit, final_balance 
+         FROM app_data_6120 
+         WHERE session_id = $1 
+         ORDER BY id", 
+        list(session_id))
+    } else if (table_name == "app_data_6120_1") {
+      result <- dbGetQuery(conn,
+        "SELECT operation_date, document_number, income_account, dividend_period, 
+                operation_description, accounting_method, initial_balance, credit, debit,
+                correspondence_debit, correspondence_credit, final_balance
+         FROM app_data_6120_1 
+         WHERE session_id = $1 
+         ORDER BY id",
+        list(session_id))
+    } else if (table_name == "app_data_6120_2") {
+      result <- dbGetQuery(conn,
+        "SELECT operation_date, document_number, income_account, dividend_period, 
+                operation_description, accounting_method, initial_balance, credit, debit,
+                correspondence_debit, correspondence_credit, final_balance
+         FROM app_data_6120_2 
+         WHERE session_id = $1 
+         ORDER BY id",
+        list(session_id))
+    } else {
+      stop("Unknown table name: ", table_name)
+    }
+    
+    if (nrow(result) == 0) {
+      message("No data found for session ", session_id, " in table ", table_name)
       return(NULL)
     }
     
-    tryCatch({
-      if (is.null(session_id)) {
-        # Load most recent session data
-        session_query <- paste("SELECT DISTINCT session_id FROM", table_name, 
-                              "ORDER BY created_at DESC LIMIT 1")
-        recent_session <- dbGetQuery(simple_conn, session_query)
-        
-        if (nrow(recent_session) == 0) {
-          message("No data found in table: ", table_name)
-          return(NULL)
-        }
-        
-        session_id <- recent_session$session_id[1]
-        message("Loading most recent session: ", session_id, " from table: ", table_name)
-      }
-      
-      # Load data for specific session
-      if (table_name == "app_data_6120") {
-        result <- dbGetQuery(simple_conn, 
-          "SELECT account_name, initial_balance, debit, credit, final_balance 
-           FROM app_data_6120 
-           WHERE session_id = $1 
-           ORDER BY id", 
-          list(session_id))
-      } else if (table_name == "app_data_6120_1") {
-        result <- dbGetQuery(simple_conn,
-          "SELECT operation_date, document_number, income_account, dividend_period, 
-                  operation_description, accounting_method, initial_balance, credit, debit,
-                  correspondence_debit, correspondence_credit, final_balance
-           FROM app_data_6120_1 
-           WHERE session_id = $1 
-           ORDER BY id",
-          list(session_id))
-      } else if (table_name == "app_data_6120_2") {
-        result <- dbGetQuery(simple_conn,
-          "SELECT operation_date, document_number, income_account, dividend_period, 
-                  operation_description, accounting_method, initial_balance, credit, debit,
-                  correspondence_debit, correspondence_credit, final_balance
-           FROM app_data_6120_2 
-           WHERE session_id = $1 
-           ORDER BY id",
-          list(session_id))
-      } else {
-        stop("Unknown table name: ", table_name)
-      }
-      
-      if (nrow(result) == 0) {
-        message("No data found for session ", session_id, " in table ", table_name)
-        return(NULL)
-      }
-      
-      message("Successfully loaded ", nrow(result), " rows from table ", table_name, " for session ", session_id)
-      return(result)
-      
-    }, error = function(e) {
-      message("Error loading from Neon for table ", table_name, ": ", e$message)
-      return(NULL)
-    }, finally = {
-      dbDisconnect(simple_conn)
-    })
-  } else {
-    # Use connection pool
-    tryCatch({
-      conn <- poolCheckout(global_pool)
-      on.exit(poolReturn(conn))
-      
-      if (is.null(session_id)) {
-        # Load most recent session data
-        session_query <- paste("SELECT DISTINCT session_id FROM", table_name, 
-                              "ORDER BY created_at DESC LIMIT 1")
-        recent_session <- dbGetQuery(conn, session_query)
-        
-        if (nrow(recent_session) == 0) {
-          message("No data found in table: ", table_name)
-          return(NULL)
-        }
-        
-        session_id <- recent_session$session_id[1]
-        message("Loading most recent session: ", session_id, " from table: ", table_name)
-      }
-      
-      # Load data for specific session
-      if (table_name == "app_data_6120") {
-        result <- dbGetQuery(conn, 
-          "SELECT account_name, initial_balance, debit, credit, final_balance 
-           FROM app_data_6120 
-           WHERE session_id = $1 
-           ORDER BY id", 
-          list(session_id))
-      } else if (table_name == "app_data_6120_1") {
-        result <- dbGetQuery(conn,
-          "SELECT operation_date, document_number, income_account, dividend_period, 
-                  operation_description, accounting_method, initial_balance, credit, debit,
-                  correspondence_debit, correspondence_credit, final_balance
-           FROM app_data_6120_1 
-           WHERE session_id = $1 
-           ORDER BY id",
-          list(session_id))
-      } else if (table_name == "app_data_6120_2") {
-        result <- dbGetQuery(conn,
-          "SELECT operation_date, document_number, income_account, dividend_period, 
-                  operation_description, accounting_method, initial_balance, credit, debit,
-                  correspondence_debit, correspondence_credit, final_balance
-           FROM app_data_6120_2 
-           WHERE session_id = $1 
-           ORDER BY id",
-          list(session_id))
-      } else {
-        stop("Unknown table name: ", table_name)
-      }
-      
-      if (nrow(result) == 0) {
-        message("No data found for session ", session_id, " in table ", table_name)
-        return(NULL)
-      }
-      
-      message("Successfully loaded ", nrow(result), " rows from table ", table_name, " for session ", session_id)
-      return(result)
-      
-    }, error = function(e) {
-      message("Error loading from Neon for table ", table_name, ": ", e$message)
-      return(NULL)
-    })
-  }
+    message("Successfully loaded ", nrow(result), " rows from table ", table_name, " for session ", session_id)
+    return(result)
+    
+  }, error = function(e) {
+    message("Error loading from Neon for table ", table_name, ": ", e$message)
+    return(NULL)
+  }, finally = {
+    # Always close connection
+    try(dbDisconnect(conn), silent = TRUE)
+  })
 }
 
 # Get available sessions with improved error handling
 get_available_sessions <- function() {
-  if (!initialize_database_connection()) {
+  conn <- create_simple_connection()
+  if (is.null(conn)) {
     message("No database connection available for session query")
     return(NULL)
   }
   
   tryCatch({
-    if (is.null(global_pool)) {
-      simple_conn <- create_simple_connection()
-      if (is.null(simple_conn)) {
-        return(NULL)
-      }
-      
-      sessions <- dbGetQuery(simple_conn, 
-        "SELECT DISTINCT session_id, MAX(created_at) as last_updated 
-         FROM (
-           SELECT session_id, created_at FROM app_data_6120
-           UNION ALL 
-           SELECT session_id, created_at FROM app_data_6120_1
-           UNION ALL 
-           SELECT session_id, created_at FROM app_data_6120_2
-         ) AS combined 
-         WHERE session_id IS NOT NULL
-         GROUP BY session_id 
-         ORDER BY last_updated DESC")
-      
-      dbDisconnect(simple_conn)
-    } else {
-      conn <- poolCheckout(global_pool)
-      on.exit(poolReturn(conn))
-      
-      sessions <- dbGetQuery(conn, 
-        "SELECT DISTINCT session_id, MAX(created_at) as last_updated 
-         FROM (
-           SELECT session_id, created_at FROM app_data_6120
-           UNION ALL 
-           SELECT session_id, created_at FROM app_data_6120_1
-           UNION ALL 
-           SELECT session_id, created_at FROM app_data_6120_2
-         ) AS combined 
-         WHERE session_id IS NOT NULL
-         GROUP BY session_id 
-         ORDER BY last_updated DESC")
-    }
+    sessions <- dbGetQuery(conn, 
+      "SELECT DISTINCT session_id, MAX(created_at) as last_updated 
+       FROM (
+         SELECT session_id, created_at FROM app_data_6120
+         UNION ALL 
+         SELECT session_id, created_at FROM app_data_6120_1
+         UNION ALL 
+         SELECT session_id, created_at FROM app_data_6120_2
+       ) AS combined 
+       WHERE session_id IS NOT NULL
+       GROUP BY session_id 
+       ORDER BY last_updated DESC")
     
     if (nrow(sessions) == 0) {
       message("No sessions found in database")
@@ -679,6 +505,8 @@ get_available_sessions <- function() {
   }, error = function(e) {
     message("Error getting sessions: ", e$message)
     return(NULL)
+  }, finally = {
+    try(dbDisconnect(conn), silent = TRUE)
   })
 }
 
@@ -833,6 +661,19 @@ ui <- fluidPage(
         font-family: monospace;
         font-size: 12px;
       }
+      .loading-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(255, 255, 255, 0.8);
+        z-index: 9999;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        flex-direction: column;
+      }
     "))
   ),
   
@@ -876,6 +717,18 @@ ui <- fluidPage(
           }
         }
       '),
+      # Loading overlay
+      conditionalPanel(
+        condition = "output.show_loading",
+        tags$div(class = "loading-overlay",
+          tags$h3("Загрузка данных..."),
+          tags$p("Пожалуйста, подождите"),
+          tags$br(),
+          tags$div(class = "spinner-border text-primary", role = "status",
+            tags$span(class = "sr-only", "Loading...")
+          )
+        )
+      ),
       tabItems(
         tabItem(tabName = "home",
           h2("Добро пожаловать в систему МСФО"),
@@ -1000,7 +853,9 @@ server <- function(input, output, session) {
     end = ymd(Sys.Date()),
     db_initialized = FALSE,
     connection_attempts = 0,
-    env_vars_status = ""
+    env_vars_status = "",
+    show_loading = FALSE,
+    is_loading_session = FALSE
   )
   
   data <- reactiveValues(
@@ -1012,6 +867,12 @@ server <- function(input, output, session) {
     df6120.1_1 = NULL,
     df6120.2_1 = NULL
   )
+  
+  # Output for loading overlay
+  output$show_loading <- reactive({
+    r$show_loading
+  })
+  outputOptions(output, "show_loading", suspendWhenHidden = FALSE)
   
   # Check environment variables
   observe({
@@ -1144,32 +1005,6 @@ server <- function(input, output, session) {
     data$df6120.2_2 <- copy(DF6120.2_2)
     data$df6120.1_1 <- copy(DF6120.1)
     data$df6120.2_1 <- copy(DF6120.2)
-    
-    # Try to load most recent data if DB is available
-    if (init_success) {
-      tryCatch({
-        neon_data_6120 <- load_data_from_neon("app_data_6120")
-        if (!is.null(neon_data_6120) && nrow(neon_data_6120) > 0) {
-          data$df6120 <- as.data.table(neon_data_6120)
-          showNotification("Данные 6120 загружены из последней сессии", type = "message")
-        }
-        
-        neon_data_6120_1 <- load_data_from_neon("app_data_6120_1")
-        if (!is.null(neon_data_6120_1) && nrow(neon_data_6120_1) > 0) {
-          data$df6120.1 <- as.data.table(neon_data_6120_1)
-          showNotification("Данные 6120.1 загружены из последней сессии", type = "message")
-        }
-        
-        neon_data_6120_2 <- load_data_from_neon("app_data_6120_2")
-        if (!is.null(neon_data_6120_2) && nrow(neon_data_6120_2) > 0) {
-          data$df6120.2 <- as.data.table(neon_data_6120_2)
-          showNotification("Данные 6120.2 загружены из последней сессии", type = "message")
-        }
-      }, error = function(e) {
-        message("Error loading initial data: ", e$message)
-        # Continue with default data
-      })
-    }
   })
   
   # Update session selector with enhanced error handling
@@ -1189,7 +1024,7 @@ server <- function(input, output, session) {
     }
   })
   
-  # Enhanced session loading
+  # OPTIMIZED: Enhanced session loading with progress indication
   observeEvent(input$load_session_btn, {
     req(input$session_selector, input$session_selector != "")
     
@@ -1199,34 +1034,56 @@ server <- function(input, output, session) {
     }
     
     selected_session <- input$session_selector
-    showNotification(paste("Загрузка сессии:", selected_session), type = "message")
     
-    tryCatch({
-      # Load data for selected session
-      neon_data_6120 <- load_data_from_neon("app_data_6120", selected_session)
-      if (!is.null(neon_data_6120) && nrow(neon_data_6120) > 0) {
-        data$df6120 <- as.data.table(neon_data_6120)
-      }
-      
-      neon_data_6120_1 <- load_data_from_neon("app_data_6120_1", selected_session)
-      if (!is.null(neon_data_6120_1) && nrow(neon_data_6120_1) > 0) {
-        data$df6120.1 <- as.data.table(neon_data_6120_1)
-      }
-      
-      neon_data_6120_2 <- load_data_from_neon("app_data_6120_2", selected_session)
-      if (!is.null(neon_data_6120_2) && nrow(neon_data_6120_2) > 0) {
-        data$df6120.2 <- as.data.table(neon_data_6120_2)
-      }
-      
-      # Update session ID to the loaded one
-      session_id(selected_session)
-      
-      shinyalert("Успех", paste("Сессия загружена:", selected_session), type = "success")
-      showNotification(paste("Текущая сессия изменена на:", selected_session), 
-                      type = "message", duration = 5)
-      
-    }, error = function(e) {
-      shinyalert("Ошибка", paste("Ошибка при загрузке сессии:", e$message), type = "error")
+    # Show loading overlay
+    r$show_loading <- TRUE
+    r$is_loading_session <- TRUE
+    
+    # Use delayed execution to allow UI to update
+    shinyjs::delay(100, {
+      tryCatch({
+        showNotification(paste("Загрузка сессии:", selected_session), type = "message")
+        
+        # Load data for selected session with progress
+        withProgress(message = 'Загрузка данных...', value = 0, {
+          # Load table 1
+          incProgress(0.3, detail = "Загрузка таблицы 6120...")
+          neon_data_6120 <- load_data_from_neon("app_data_6120", selected_session)
+          if (!is.null(neon_data_6120) && nrow(neon_data_6120) > 0) {
+            data$df6120 <- as.data.table(neon_data_6120)
+          }
+          
+          # Load table 2
+          incProgress(0.3, detail = "Загрузка таблицы 6120.1...")
+          neon_data_6120_1 <- load_data_from_neon("app_data_6120_1", selected_session)
+          if (!is.null(neon_data_6120_1) && nrow(neon_data_6120_1) > 0) {
+            data$df6120.1 <- as.data.table(neon_data_6120_1)
+          }
+          
+          # Load table 3
+          incProgress(0.3, detail = "Загрузка таблицы 6120.2...")
+          neon_data_6120_2 <- load_data_from_neon("app_data_6120_2", selected_session)
+          if (!is.null(neon_data_6120_2) && nrow(neon_data_6120_2) > 0) {
+            data$df6120.2 <- as.data.table(neon_data_6120_2)
+          }
+          
+          incProgress(0.1, detail = "Завершение...")
+        })
+        
+        # Update session ID to the loaded one
+        session_id(selected_session)
+        
+        shinyalert("Успех", paste("Сессия загружена:", selected_session), type = "success")
+        showNotification(paste("Текущая сессия изменена на:", selected_session), 
+                        type = "message", duration = 5)
+        
+      }, error = function(e) {
+        shinyalert("Ошибка", paste("Ошибка при загрузке сессии:", e$message), type = "error")
+      }, finally = {
+        # Hide loading overlay
+        r$show_loading <- FALSE
+        r$is_loading_session <- FALSE
+      })
     })
   })
   
@@ -1319,42 +1176,6 @@ server <- function(input, output, session) {
   # Display current session info
   output$current_session_info <- renderText({
     paste("ID текущей сессии:", session_id())
-  })
-  
-  # Enhanced auto-save with better error handling
-  auto_save_timer <- reactiveTimer(30000) # 30 seconds
-  
-  observe({
-    auto_save_timer()
-    if (r$db_initialized && !is.null(data$df6120) && nrow(data$df6120) > 0) {
-      tryCatch({
-        save_data_to_neon(data$df6120, "app_data_6120", session_id())
-      }, error = function(e) {
-        message("Auto-save error for df6120: ", e$message)
-      })
-    }
-  })
-  
-  observe({
-    auto_save_timer()
-    if (r$db_initialized && !is.null(data$df6120.1) && nrow(data$df6120.1) > 0) {
-      tryCatch({
-        save_data_to_neon(data$df6120.1, "app_data_6120_1", session_id())
-      }, error = function(e) {
-        message("Auto-save error for df6120.1: ", e$message)
-      })
-    }
-  })
-  
-  observe({
-    auto_save_timer()
-    if (r$db_initialized && !is.null(data$df6120.2) && nrow(data$df6120.2) > 0) {
-      tryCatch({
-        save_data_to_neon(data$df6120.2, "app_data_6120_2", session_id())
-      }, error = function(e) {
-        message("Auto-save error for df6120.2: ", e$message)
-      })
-    }
   })
   
   # The rest of your table update observers and rendering functions remain the same...
