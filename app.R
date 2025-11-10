@@ -12,41 +12,59 @@ library(pool)
 library(httr)
 library(jsonlite)
 
-# Enhanced database connection with connection pooling and better error handling
-connect_to_neon <- function() {
+# Global database connection pool with better timeout handling
+create_connection_pool <- function() {
   tryCatch({
-    con <- dbConnect(
-      RPostgres::Postgres(),
+    pool <- dbPool(
+      drv = RPostgres::Postgres(),
       host = Sys.getenv("NEON_HOST"),
       port = as.numeric(Sys.getenv("NEON_PORT")),
       dbname = Sys.getenv("NEON_DATABASE"),
       user = Sys.getenv("NEON_USER"),
       password = Sys.getenv("NEON_PASSWORD"),
       sslmode = "require",
-      bigint = "numeric"
+      bigint = "numeric",
+      minSize = 1,
+      maxSize = 3,
+      idleTimeout = 300000, # 5 minutes
+      validationInterval = 30000, # 30 seconds
+      pool_validate = function(con) {
+        tryCatch({
+          dbGetQuery(con, "SELECT 1")
+          TRUE
+        }, error = function(e) FALSE)
+      }
     )
-    return(con)
+    return(pool)
   }, error = function(e) {
-    message("Database connection error: ", e$message)
+    message("Database connection pool creation error: ", e$message)
     return(NULL)
   })
 }
 
-# Initialize database tables with error handling
+# Global connection pool
+global_pool <- NULL
+
+# Initialize database connection
+initialize_database_connection <- function() {
+  if (is.null(global_pool)) {
+    global_pool <<- create_connection_pool()
+  }
+  return(!is.null(global_pool))
+}
+
+# Initialize database tables with improved error handling
 initialize_database <- function() {
-  con <- connect_to_neon()
-  if (is.null(con)) {
-    message("Failed to connect to database during initialization")
+  if (!initialize_database_connection()) {
+    message("Failed to establish database connection during initialization")
     return(FALSE)
   }
   
-  on.exit({
-    if (dbIsValid(con)) {
-      dbDisconnect(con)
-    }
-  })
-  
   tryCatch({
+    # Test connection first
+    test_conn <- poolCheckout(global_pool)
+    poolReturn(test_conn)
+    
     create_table_sql <- "
     CREATE TABLE IF NOT EXISTS app_data_6120 (
       id SERIAL PRIMARY KEY,
@@ -100,9 +118,12 @@ initialize_database <- function() {
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );"
     
-    dbExecute(con, create_table_sql)
-    dbExecute(con, create_table_sql_6120_1)
-    dbExecute(con, create_table_sql_6120_2)
+    conn <- poolCheckout(global_pool)
+    on.exit(poolReturn(conn))
+    
+    dbExecute(conn, create_table_sql)
+    dbExecute(conn, create_table_sql_6120_1)
+    dbExecute(conn, create_table_sql_6120_2)
     return(TRUE)
   }, error = function(e) {
     message("Database initialization error: ", e$message)
@@ -110,22 +131,25 @@ initialize_database <- function() {
   })
 }
 
-# Enhanced save data to Neon with batch operations
+# Enhanced save data to Neon with transaction support
 save_data_to_neon <- function(data, table_name, session_id) {
   if (is.null(data) || nrow(data) == 0) return(FALSE)
   
+  if (!initialize_database_connection()) {
+    message("No database connection available for save operation")
+    return(FALSE)
+  }
+  
   tryCatch({
-    con <- connect_to_neon()
-    if (is.null(con)) return(FALSE)
-    on.exit({
-      if (dbIsValid(con)) {
-        dbDisconnect(con)
-      }
-    })
+    conn <- poolCheckout(global_pool)
+    on.exit(poolReturn(conn))
+    
+    # Start transaction
+    dbExecute(conn, "BEGIN")
     
     # Clear previous session data
     delete_sql <- paste("DELETE FROM", table_name, "WHERE session_id = $1")
-    dbExecute(con, delete_sql, list(session_id))
+    dbExecute(conn, delete_sql, list(session_id))
     
     # Prepare data for batch insert
     if (table_name == "app_data_6120") {
@@ -133,7 +157,7 @@ save_data_to_neon <- function(data, table_name, session_id) {
               VALUES ($1, $2, $3, $4, $5, $6)"
       
       for(i in 1:nrow(data)) {
-        dbExecute(con, sql, list(
+        dbExecute(conn, sql, list(
           session_id, 
           as.character(data[i, 1]), 
           as.numeric(data[i, 2]), 
@@ -151,7 +175,7 @@ save_data_to_neon <- function(data, table_name, session_id) {
                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)")
       
       for(i in 1:nrow(data)) {
-        dbExecute(con, sql, list(
+        dbExecute(conn, sql, list(
           session_id,
           as.character(data[i, 1]), as.character(data[i, 2]), as.character(data[i, 3]),
           as.character(data[i, 4]), as.character(data[i, 5]), as.character(data[i, 6]),
@@ -160,34 +184,45 @@ save_data_to_neon <- function(data, table_name, session_id) {
         ))
       }
     }
+    
+    # Commit transaction
+    dbExecute(conn, "COMMIT")
     return(TRUE)
   }, error = function(e) {
+    # Rollback on error
+    tryCatch({
+      conn <- poolCheckout(global_pool)
+      dbExecute(conn, "ROLLBACK")
+      poolReturn(conn)
+    }, error = function(rollback_e) {
+      message("Rollback failed: ", rollback_e$message)
+    })
     message("Error saving to Neon: ", e$message)
     return(FALSE)
   })
 }
 
-# Enhanced load data from Neon with better session management
+# Enhanced load data from Neon with connection pooling
 load_data_from_neon <- function(table_name, session_id = NULL) {
+  if (!initialize_database_connection()) {
+    message("No database connection available for load operation")
+    return(NULL)
+  }
+  
   tryCatch({
-    con <- connect_to_neon()
-    if (is.null(con)) return(NULL)
-    on.exit({
-      if (dbIsValid(con)) {
-        dbDisconnect(con)
-      }
-    })
+    conn <- poolCheckout(global_pool)
+    on.exit(poolReturn(conn))
     
     if (is.null(session_id)) {
       # Load most recent data
       if (table_name == "app_data_6120") {
-        result <- dbGetQuery(con, 
+        result <- dbGetQuery(conn, 
           "SELECT account_name, initial_balance, debit, credit, final_balance 
            FROM app_data_6120 
            WHERE session_id IN (SELECT session_id FROM app_data_6120 ORDER BY created_at DESC LIMIT 1)
            ORDER BY id")
       } else if (table_name == "app_data_6120_1") {
-        result <- dbGetQuery(con,
+        result <- dbGetQuery(conn,
           "SELECT operation_date, document_number, income_account, dividend_period, 
                   operation_description, accounting_method, initial_balance, credit, debit,
                   correspondence_debit, correspondence_credit, final_balance
@@ -195,7 +230,7 @@ load_data_from_neon <- function(table_name, session_id = NULL) {
            WHERE session_id IN (SELECT session_id FROM app_data_6120_1 ORDER BY created_at DESC LIMIT 1)
            ORDER BY id")
       } else if (table_name == "app_data_6120_2") {
-        result <- dbGetQuery(con,
+        result <- dbGetQuery(conn,
           "SELECT operation_date, document_number, income_account, dividend_period, 
                   operation_description, accounting_method, initial_balance, credit, debit,
                   correspondence_debit, correspondence_credit, final_balance
@@ -206,14 +241,14 @@ load_data_from_neon <- function(table_name, session_id = NULL) {
     } else {
       # Load data for specific session
       if (table_name == "app_data_6120") {
-        result <- dbGetQuery(con, 
+        result <- dbGetQuery(conn, 
           "SELECT account_name, initial_balance, debit, credit, final_balance 
            FROM app_data_6120 
            WHERE session_id = $1 
            ORDER BY id", 
           list(session_id))
       } else if (table_name == "app_data_6120_1") {
-        result <- dbGetQuery(con,
+        result <- dbGetQuery(conn,
           "SELECT operation_date, document_number, income_account, dividend_period, 
                   operation_description, accounting_method, initial_balance, credit, debit,
                   correspondence_debit, correspondence_credit, final_balance
@@ -222,7 +257,7 @@ load_data_from_neon <- function(table_name, session_id = NULL) {
            ORDER BY id",
           list(session_id))
       } else if (table_name == "app_data_6120_2") {
-        result <- dbGetQuery(con,
+        result <- dbGetQuery(conn,
           "SELECT operation_date, document_number, income_account, dividend_period, 
                   operation_description, accounting_method, initial_balance, credit, debit,
                   correspondence_debit, correspondence_credit, final_balance
@@ -252,16 +287,16 @@ load_data_from_neon <- function(table_name, session_id = NULL) {
 
 # Get available sessions
 get_available_sessions <- function() {
+  if (!initialize_database_connection()) {
+    message("No database connection available for session query")
+    return(NULL)
+  }
+  
   tryCatch({
-    con <- connect_to_neon()
-    if (is.null(con)) return(NULL)
-    on.exit({
-      if (dbIsValid(con)) {
-        dbDisconnect(con)
-      }
-    })
+    conn <- poolCheckout(global_pool)
+    on.exit(poolReturn(conn))
     
-    sessions <- dbGetQuery(con, 
+    sessions <- dbGetQuery(conn, 
       "SELECT DISTINCT session_id, MAX(created_at) as last_updated 
        FROM (
          SELECT session_id, created_at FROM app_data_6120
@@ -357,10 +392,48 @@ DF6120.2_2 <- data.table(
   stringsAsFactors = FALSE
 )
 
-# UI remains largely the same but with minor improvements
+# UI with connection status indicator
 ui <- fluidPage(
+  tags$head(
+    tags$script(HTML("
+      // Connection heartbeat to prevent timeouts
+      setInterval(function() {
+        Shiny.setInputValue('heartbeat', Date.now());
+      }, 30000); // 30 seconds
+      
+      // Handle connection status changes
+      $(document).on('shiny:disconnected', function(event) {
+        $('#connection-status').html('<span style=\"color: red;\">● Disconnected</span>');
+      });
+      
+      $(document).on('shiny:connected', function(event) {
+        $('#connection-status').html('<span style=\"color: green;\">● Connected</span>');
+      });
+    ")),
+    tags$style(HTML("
+      .connection-status {
+        position: fixed;
+        top: 10px;
+        right: 10px;
+        z-index: 9999;
+        background: white;
+        padding: 5px 10px;
+        border-radius: 3px;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+        font-size: 12px;
+      }
+    "))
+  ),
+  
   dashboardPage(
-    dashboardHeader(title = "МСФО"),
+    dashboardHeader(
+      title = "МСФО",
+      tags$li(class = "dropdown",
+        tags$div(class = "connection-status", id = "connection-status",
+          tags$span(style = "color: green;", "● Connected")
+        )
+      )
+    ),
     dashboardSidebar(
       width = 1050,
       sidebarMenu(
@@ -397,6 +470,9 @@ ui <- fluidPage(
           h2("Welcome to the Home Page"),
           fluidRow(
             box(width = 12, title = "Data Management",
+              actionButton("test_connection", "Test Database Connection"),
+              verbatimTextOutput("connection_status"),
+              br(),
               selectInput("session_selector", "Select Session to Load:", choices = NULL),
               actionButton("load_session_btn", "Load Selected Session"),
               actionButton("save_session_btn", "Save Current Session"),
@@ -489,7 +565,8 @@ server <- function(input, output, session) {
   # Initialize reactive values
   r <- reactiveValues(
     start = ymd(Sys.Date()),
-    end = ymd(Sys.Date())
+    end = ymd(Sys.Date()),
+    db_initialized = FALSE
   )
   
   data <- reactiveValues(
@@ -502,33 +579,67 @@ server <- function(input, output, session) {
     df6120.2_1 = NULL
   )
   
+  # Heartbeat to keep connection alive
+  observeEvent(input$heartbeat, {
+    # Just update the input to keep connection alive
+    message("Heartbeat received at: ", Sys.time())
+  })
+  
+  # Test database connection
+  observeEvent(input$test_connection, {
+    if (initialize_database_connection()) {
+      shinyalert("Success", "Database connection is active!", type = "success")
+    } else {
+      shinyalert("Error", "Failed to connect to database", type = "error")
+    }
+  })
+  
+  output$connection_status <- renderText({
+    if (is.null(global_pool)) {
+      "Database: Not Connected"
+    } else {
+      "Database: Connected"
+    }
+  })
+  
   # Initialize database and data on app start
   observe({
-    # Initialize database
+    # Initialize database connection and tables
     init_success <- initialize_database()
+    r$db_initialized <- init_success
+    
     if (!init_success) {
       showNotification("Database initialization failed. Check your connection settings.", type = "error")
+    } else {
+      showNotification("Database connection established successfully.", type = "message")
     }
     
     # Load most recent data
-    neon_data_6120 <- load_data_from_neon("app_data_6120")
-    if (!is.null(neon_data_6120) && nrow(neon_data_6120) > 0) {
-      data$df6120 <- as.data.table(neon_data_6120)
+    if (init_success) {
+      neon_data_6120 <- load_data_from_neon("app_data_6120")
+      if (!is.null(neon_data_6120) && nrow(neon_data_6120) > 0) {
+        data$df6120 <- as.data.table(neon_data_6120)
+      } else {
+        data$df6120 <- copy(DF6120)
+      }
+      
+      neon_data_6120_1 <- load_data_from_neon("app_data_6120_1")
+      if (!is.null(neon_data_6120_1) && nrow(neon_data_6120_1) > 0) {
+        data$df6120.1 <- as.data.table(neon_data_6120_1)
+      } else {
+        data$df6120.1 <- copy(DF6120.1)
+      }
+      
+      neon_data_6120_2 <- load_data_from_neon("app_data_6120_2")
+      if (!is.null(neon_data_6120_2) && nrow(neon_data_6120_2) > 0) {
+        data$df6120.2 <- as.data.table(neon_data_6120_2)
+      } else {
+        data$df6120.2 <- copy(DF6120.2)
+      }
     } else {
+      # Use default data if DB connection fails
       data$df6120 <- copy(DF6120)
-    }
-    
-    neon_data_6120_1 <- load_data_from_neon("app_data_6120_1")
-    if (!is.null(neon_data_6120_1) && nrow(neon_data_6120_1) > 0) {
-      data$df6120.1 <- as.data.table(neon_data_6120_1)
-    } else {
       data$df6120.1 <- copy(DF6120.1)
-    }
-    
-    neon_data_6120_2 <- load_data_from_neon("app_data_6120_2")
-    if (!is.null(neon_data_6120_2) && nrow(neon_data_6120_2) > 0) {
-      data$df6120.2 <- as.data.table(neon_data_6120_2)
-    } else {
       data$df6120.2 <- copy(DF6120.2)
     }
     
@@ -541,15 +652,22 @@ server <- function(input, output, session) {
   
   # Update session selector
   observe({
-    sessions <- get_available_sessions()
-    if (!is.null(sessions)) {
-      updateSelectInput(session, "session_selector", choices = c("", sessions))
+    if (r$db_initialized) {
+      sessions <- get_available_sessions()
+      if (!is.null(sessions)) {
+        updateSelectInput(session, "session_selector", choices = c("", sessions))
+      }
     }
   })
   
   # Load selected session
   observeEvent(input$load_session_btn, {
     req(input$session_selector, input$session_selector != "")
+    
+    if (!r$db_initialized) {
+      shinyalert("Error", "Database not available. Cannot load session.", type = "error")
+      return()
+    }
     
     selected_session <- input$session_selector
     
@@ -575,34 +693,33 @@ server <- function(input, output, session) {
   
   # Save current session
   observeEvent(input$save_session_btn, {
+    if (!r$db_initialized) {
+      shinyalert("Error", "Database not available. Cannot save session.", type = "error")
+      return()
+    }
+    
+    save_success <- TRUE
+    
     if (!is.null(data$df6120)) {
-      save_success <- save_data_to_neon(data$df6120, "app_data_6120", session_id())
-      if (!save_success) {
-        shinyalert("Error", "Failed to save data to database", type = "error")
-        return()
-      }
+      save_success <- save_success && save_data_to_neon(data$df6120, "app_data_6120", session_id())
     }
     if (!is.null(data$df6120.1)) {
-      save_success <- save_data_to_neon(data$df6120.1, "app_data_6120_1", session_id())
-      if (!save_success) {
-        shinyalert("Error", "Failed to save data to database", type = "error")
-        return()
-      }
+      save_success <- save_success && save_data_to_neon(data$df6120.1, "app_data_6120_1", session_id())
     }
     if (!is.null(data$df6120.2)) {
-      save_success <- save_data_to_neon(data$df6120.2, "app_data_6120_2", session_id())
-      if (!save_success) {
-        shinyalert("Error", "Failed to save data to database", type = "error")
-        return()
-      }
+      save_success <- save_success && save_data_to_neon(data$df6120.2, "app_data_6120_2", session_id())
     }
     
-    shinyalert("Success", paste("Session saved:", session_id()), type = "success")
-    
-    # Update session list
-    sessions <- get_available_sessions()
-    if (!is.null(sessions)) {
-      updateSelectInput(session, "session_selector", choices = c("", sessions))
+    if (save_success) {
+      shinyalert("Success", paste("Session saved:", session_id()), type = "success")
+      
+      # Update session list
+      sessions <- get_available_sessions()
+      if (!is.null(sessions)) {
+        updateSelectInput(session, "session_selector", choices = c("", sessions))
+      }
+    } else {
+      shinyalert("Error", "Failed to save data to database", type = "error")
     }
   })
   
@@ -628,23 +745,28 @@ server <- function(input, output, session) {
     paste("Current Session ID:", session_id())
   })
   
-  # Auto-save with debouncing
-  auto_save_6120 <- observe({
-    req(input$table6120Item1, data$df6120)
-    data$df6120 <- hot_to_r(input$table6120Item1)
-    save_data_to_neon(data$df6120, "app_data_6120", session_id())
+  # Auto-save with debouncing (using reactiveTimer for better performance)
+  auto_save_timer <- reactiveTimer(10000) # 10 seconds
+  
+  observe({
+    auto_save_timer()
+    if (r$db_initialized && !is.null(data$df6120)) {
+      save_data_to_neon(data$df6120, "app_data_6120", session_id())
+    }
   })
   
-  auto_save_6120_1 <- observe({
-    req(input$table6120.1Item1, data$df6120.1)
-    data$df6120.1 <- hot_to_r(input$table6120.1Item1)
-    save_data_to_neon(data$df6120.1, "app_data_6120_1", session_id())
+  observe({
+    auto_save_timer()
+    if (r$db_initialized && !is.null(data$df6120.1)) {
+      save_data_to_neon(data$df6120.1, "app_data_6120_1", session_id())
+    }
   })
   
-  auto_save_6120_2 <- observe({
-    req(input$table6120.2Item1, data$df6120.2)
-    data$df6120.2 <- hot_to_r(input$table6120.2Item1)
-    save_data_to_neon(data$df6120.2, "app_data_6120_2", session_id())
+  observe({
+    auto_save_timer()
+    if (r$db_initialized && !is.null(data$df6120.2)) {
+      save_data_to_neon(data$df6120.2, "app_data_6120_2", session_id())
+    }
   })
   
   # Update data from tables
@@ -1058,6 +1180,13 @@ server <- function(input, output, session) {
       write.xlsx(data$df6120.2_2, file)
     }
   )
+  
+  # Clean up on session end
+  session$onSessionEnded(function() {
+    if (!is.null(global_pool)) {
+      poolClose(global_pool)
+    }
+  })
 }
 
 shinyApp(ui, server)
