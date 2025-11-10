@@ -22,7 +22,7 @@ create_connection_pool <- function() {
       message("Attempting database connection (attempt ", attempt, ")")
       
       # Получаем строку подключения из переменных окружения
-      database_url <- Sys.getenv("postgresql://neondb_owner:npg_ylxqI8kmSLO5@ep-super-pine-adaqp050-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require")
+      database_url <- Sys.getenv("DATABASE_URL")
       
       if (database_url == "") {
         message("DATABASE_URL environment variable is empty")
