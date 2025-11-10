@@ -21,7 +21,7 @@ create_connection_pool <- function() {
     tryCatch({
       message("Attempting database connection (attempt ", attempt, ")")
       
-      # Получаем строку подключения из переменных окружения
+      # CORRECTED: Get the environment variable by name, not the connection string
       database_url <- Sys.getenv("DATABASE_URL")
       
       if (database_url == "") {
@@ -29,8 +29,9 @@ create_connection_pool <- function() {
         return(NULL)
       }
       
-      # Парсим строку подключения Neon
-      # Формат: postgresql://user:password@host:port/dbname
+      message("DATABASE_URL found, length: ", nchar(database_url))
+      
+      # Parse Neon connection string
       db_params <- parse_neon_connection_string(database_url)
       
       if (is.null(db_params)) {
@@ -40,6 +41,7 @@ create_connection_pool <- function() {
       
       message(paste("Connecting to:", db_params$host, "database:", db_params$dbname))
       
+      # Enhanced connection parameters for Neon
       pool <- dbPool(
         drv = RPostgres::Postgres(),
         host = db_params$host,
@@ -48,7 +50,7 @@ create_connection_pool <- function() {
         user = db_params$user,
         password = db_params$password,
         sslmode = "require",
-        sslrootcert = system.file("certs/ca-bundle.crt", package = "RPostgres"),
+        sslrootcert = NULL,  # Let system handle SSL certificates
         bigint = "numeric",
         minSize = 1,
         maxSize = 3,
@@ -87,59 +89,81 @@ create_connection_pool <- function() {
   }
 }
 
-# Функция для парсинга строки подключения Neon
+# IMPROVED: Function for parsing Neon connection string with query parameters
 parse_neon_connection_string <- function(connection_string) {
   tryCatch({
-    # Удаляем префикс postgresql://
+    message("Parsing connection string...")
+    
+    # Remove postgresql:// prefix
     clean_string <- gsub("^postgresql://", "", connection_string)
     
-    # Разделяем на части
+    # Split user:password and host:port/dbname?params
     parts <- strsplit(clean_string, "@")[[1]]
     if (length(parts) != 2) {
+      message("Invalid format: expected user:password@host/dbname")
       return(NULL)
     }
     
-    # Парсим user:password
+    # Parse user:password
     auth_parts <- strsplit(parts[1], ":")[[1]]
     if (length(auth_parts) != 2) {
+      message("Invalid auth format: expected user:password")
       return(NULL)
     }
     
     user <- auth_parts[1]
     password <- auth_parts[2]
     
-    # Парсим host:port/dbname
-    host_db_parts <- strsplit(parts[2], "/")[[1]]
-    if (length(host_db_parts) != 2) {
+    # Parse host:port/dbname?params
+    host_db_part <- parts[2]
+    
+    # Split by / to separate host:port from dbname?params
+    host_db_parts <- strsplit(host_db_part, "/")[[1]]
+    if (length(host_db_parts) < 2) {
+      message("Invalid host/db format: expected host:port/dbname")
       return(NULL)
     }
     
-    dbname <- host_db_parts[2]
+    host_port <- host_db_parts[1]
+    dbname_with_params <- paste(host_db_parts[-1], collapse = "/")
     
-    # Парсим host:port
-    host_port_parts <- strsplit(host_db_parts[1], ":")[[1]]
-    if (length(host_port_parts) != 2) {
+    # Remove query parameters from dbname
+    dbname_parts <- strsplit(dbname_with_params, "\\?")[[1]]
+    dbname <- dbname_parts[1]
+    
+    # Parse host:port
+    host_port_parts <- strsplit(host_port, ":")[[1]]
+    if (length(host_port_parts) == 1) {
+      # No port specified, use default
+      host <- host_port_parts[1]
+      port <- 5432
+    } else if (length(host_port_parts) == 2) {
+      host <- host_port_parts[1]
+      port <- as.numeric(host_port_parts[2])
+    } else {
+      message("Invalid host:port format")
       return(NULL)
     }
     
-    host <- host_port_parts[1]
-    port <- as.numeric(host_port_parts[2])
-    
-    return(list(
+    result <- list(
       host = host,
       port = port,
       dbname = dbname,
       user = user,
       password = password
-    ))
+    )
+    
+    message("Parsed connection parameters successfully")
+    return(result)
+    
   }, error = function(e) {
     message("Error parsing connection string: ", e$message)
     return(NULL)
   })
 }
 
-# Альтернативная функция подключения с использованием dbConnect
-create_direct_connection <- function() {
+# ALTERNATIVE: Simple connection using connection string directly
+create_simple_connection <- function() {
   tryCatch({
     database_url <- Sys.getenv("DATABASE_URL")
     
@@ -148,27 +172,23 @@ create_direct_connection <- function() {
       return(NULL)
     }
     
-    db_params <- parse_neon_connection_string(database_url)
-    if (is.null(db_params)) {
-      return(NULL)
-    }
-    
+    # Direct connection using connection string
     conn <- dbConnect(
       RPostgres::Postgres(),
-      host = db_params$host,
-      port = db_params$port,
-      dbname = db_params$dbname,
-      user = db_params$user,
-      password = db_params$password,
+      dbname = sub(".*/([^?]+).*", "\\1", database_url),  # Extract dbname
+      host = sub(".*@([^/]+).*", "\\1", database_url),    # Extract host
+      port = 5432,
+      user = sub(".*://([^:]+):.*", "\\1", database_url), # Extract user
+      password = sub(".*://[^:]+:([^@]+)@.*", "\\1", database_url), # Extract password
       sslmode = "require"
     )
     
     # Test connection
     test_result <- dbGetQuery(conn, "SELECT 1")
-    message("Direct database connection established successfully")
+    message("Simple database connection established successfully")
     return(conn)
   }, error = function(e) {
-    message("Direct connection failed: ", e$message)
+    message("Simple connection failed: ", e$message)
     return(NULL)
   })
 }
@@ -182,13 +202,13 @@ initialize_database_connection <- function() {
     message("Creating new database connection pool...")
     global_pool <<- create_connection_pool()
     
-    # Если пул не создался, пробуем прямое подключение
+    # If pool creation failed, try simple connection
     if (is.null(global_pool)) {
-      message("Pool creation failed, trying direct connection...")
-      direct_conn <- create_direct_connection()
-      if (!is.null(direct_conn)) {
-        message("Direct connection successful - database is accessible")
-        dbDisconnect(direct_conn)
+      message("Pool creation failed, trying simple connection...")
+      simple_conn <- create_simple_connection()
+      if (!is.null(simple_conn)) {
+        message("Simple connection successful - database is accessible")
+        dbDisconnect(simple_conn)
         return(TRUE)
       }
       return(FALSE)
@@ -217,7 +237,7 @@ initialize_database <- function() {
     return(FALSE)
   }
   
-  # Если пул не создан, но база доступна, просто продолжаем
+  # If pool is not created but database is accessible, just continue
   if (is.null(global_pool)) {
     message("No pool available but database might be accessible for direct connections")
     return(TRUE)
@@ -307,22 +327,22 @@ save_data_to_neon <- function(data, table_name, session_id) {
     return(FALSE)
   }
   
-  # Если пул недоступен, пробуем прямое подключение
+  # If pool is not available, try simple connection
   if (is.null(global_pool)) {
-    message("No pool available, trying direct connection for save operation")
-    direct_conn <- create_direct_connection()
-    if (is.null(direct_conn)) {
-      message("Direct connection also failed for save operation")
+    message("No pool available, trying simple connection for save operation")
+    simple_conn <- create_simple_connection()
+    if (is.null(simple_conn)) {
+      message("Simple connection also failed for save operation")
       return(FALSE)
     }
     
     tryCatch({
       # Start transaction
-      dbExecute(direct_conn, "BEGIN")
+      dbExecute(simple_conn, "BEGIN")
       
       # Clear previous session data for this table
       delete_sql <- paste("DELETE FROM", table_name, "WHERE session_id = $1")
-      deleted_rows <- dbExecute(direct_conn, delete_sql, list(session_id))
+      deleted_rows <- dbExecute(simple_conn, delete_sql, list(session_id))
       message("Deleted ", deleted_rows, " previous rows for session ", session_id, " in table ", table_name)
       
       # Prepare and execute batch insert
@@ -332,7 +352,7 @@ save_data_to_neon <- function(data, table_name, session_id) {
                      VALUES ($1, $2, $3, $4, $5, $6)")
         
         for(i in 1:nrow(data)) {
-          dbExecute(direct_conn, sql, list(
+          dbExecute(simple_conn, sql, list(
             session_id, 
             as.character(data[i, 1]), 
             as.numeric(data[i, 2] %||% 0), 
@@ -350,7 +370,7 @@ save_data_to_neon <- function(data, table_name, session_id) {
                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)")
         
         for(i in 1:nrow(data)) {
-          dbExecute(direct_conn, sql, list(
+          dbExecute(simple_conn, sql, list(
             session_id,
             as.character(data[i, 1] %||% NA),
             as.character(data[i, 2] %||% NA),
@@ -369,24 +389,24 @@ save_data_to_neon <- function(data, table_name, session_id) {
       }
       
       # Commit transaction
-      dbExecute(direct_conn, "COMMIT")
+      dbExecute(simple_conn, "COMMIT")
       message("Successfully saved ", nrow(data), " rows to table ", table_name, " for session ", session_id)
       return(TRUE)
       
     }, error = function(e) {
       # Rollback on error
       tryCatch({
-        dbExecute(direct_conn, "ROLLBACK")
+        dbExecute(simple_conn, "ROLLBACK")
       }, error = function(rollback_e) {
         message("Rollback failed: ", rollback_e$message)
       })
       message("Error saving to Neon for table ", table_name, ": ", e$message)
       return(FALSE)
     }, finally = {
-      dbDisconnect(direct_conn)
+      dbDisconnect(simple_conn)
     })
   } else {
-    # Используем пул соединений
+    # Use connection pool
     tryCatch({
       conn <- poolCheckout(global_pool)
       on.exit(poolReturn(conn))
@@ -469,12 +489,12 @@ load_data_from_neon <- function(table_name, session_id = NULL) {
     return(NULL)
   }
   
-  # Если пул недоступен, пробуем прямое подключение
+  # If pool is not available, try simple connection
   if (is.null(global_pool)) {
-    message("No pool available, trying direct connection for load operation")
-    direct_conn <- create_direct_connection()
-    if (is.null(direct_conn)) {
-      message("Direct connection also failed for load operation")
+    message("No pool available, trying simple connection for load operation")
+    simple_conn <- create_simple_connection()
+    if (is.null(simple_conn)) {
+      message("Simple connection also failed for load operation")
       return(NULL)
     }
     
@@ -483,7 +503,7 @@ load_data_from_neon <- function(table_name, session_id = NULL) {
         # Load most recent session data
         session_query <- paste("SELECT DISTINCT session_id FROM", table_name, 
                               "ORDER BY created_at DESC LIMIT 1")
-        recent_session <- dbGetQuery(direct_conn, session_query)
+        recent_session <- dbGetQuery(simple_conn, session_query)
         
         if (nrow(recent_session) == 0) {
           message("No data found in table: ", table_name)
@@ -496,14 +516,14 @@ load_data_from_neon <- function(table_name, session_id = NULL) {
       
       # Load data for specific session
       if (table_name == "app_data_6120") {
-        result <- dbGetQuery(direct_conn, 
+        result <- dbGetQuery(simple_conn, 
           "SELECT account_name, initial_balance, debit, credit, final_balance 
            FROM app_data_6120 
            WHERE session_id = $1 
            ORDER BY id", 
           list(session_id))
       } else if (table_name == "app_data_6120_1") {
-        result <- dbGetQuery(direct_conn,
+        result <- dbGetQuery(simple_conn,
           "SELECT operation_date, document_number, income_account, dividend_period, 
                   operation_description, accounting_method, initial_balance, credit, debit,
                   correspondence_debit, correspondence_credit, final_balance
@@ -512,7 +532,7 @@ load_data_from_neon <- function(table_name, session_id = NULL) {
            ORDER BY id",
           list(session_id))
       } else if (table_name == "app_data_6120_2") {
-        result <- dbGetQuery(direct_conn,
+        result <- dbGetQuery(simple_conn,
           "SELECT operation_date, document_number, income_account, dividend_period, 
                   operation_description, accounting_method, initial_balance, credit, debit,
                   correspondence_debit, correspondence_credit, final_balance
@@ -536,10 +556,10 @@ load_data_from_neon <- function(table_name, session_id = NULL) {
       message("Error loading from Neon for table ", table_name, ": ", e$message)
       return(NULL)
     }, finally = {
-      dbDisconnect(direct_conn)
+      dbDisconnect(simple_conn)
     })
   } else {
-    # Используем пул соединений
+    # Use connection pool
     tryCatch({
       conn <- poolCheckout(global_pool)
       on.exit(poolReturn(conn))
@@ -613,12 +633,12 @@ get_available_sessions <- function() {
   
   tryCatch({
     if (is.null(global_pool)) {
-      direct_conn <- create_direct_connection()
-      if (is.null(direct_conn)) {
+      simple_conn <- create_simple_connection()
+      if (is.null(simple_conn)) {
         return(NULL)
       }
       
-      sessions <- dbGetQuery(direct_conn, 
+      sessions <- dbGetQuery(simple_conn, 
         "SELECT DISTINCT session_id, MAX(created_at) as last_updated 
          FROM (
            SELECT session_id, created_at FROM app_data_6120
@@ -631,7 +651,7 @@ get_available_sessions <- function() {
          GROUP BY session_id 
          ORDER BY last_updated DESC")
       
-      dbDisconnect(direct_conn)
+      dbDisconnect(simple_conn)
     } else {
       conn <- poolCheckout(global_pool)
       on.exit(poolReturn(conn))
@@ -1038,10 +1058,10 @@ server <- function(input, output, session) {
     
     Sys.sleep(1) # Brief pause
     
-    # Test direct connection first
-    direct_conn <- create_direct_connection()
-    if (!is.null(direct_conn)) {
-      dbDisconnect(direct_conn)
+    # Test simple connection first
+    simple_conn <- create_simple_connection()
+    if (!is.null(simple_conn)) {
+      dbDisconnect(simple_conn)
       shinyalert("Успех", 
                 "Прямое подключение к базе данных установлено успешно!", 
                 type = "success")
@@ -1059,7 +1079,7 @@ server <- function(input, output, session) {
                     type = "success")
         } else {
           shinyalert("Успех", 
-                    "База данных доступна (прямое подключение работает)", 
+                    "База данных доступна (простое подключение работает)", 
                     type = "success")
         }
       }, error = function(e) {
@@ -1082,13 +1102,13 @@ server <- function(input, output, session) {
     }
     
     if (is.null(global_pool)) {
-      # Test direct connection
-      direct_conn <- create_direct_connection()
-      if (!is.null(direct_conn)) {
-        dbDisconnect(direct_conn)
-        return("✅ База данных: Доступна (прямое подключение)\n❌ Пул соединений: Не создан")
+      # Test simple connection
+      simple_conn <- create_simple_connection()
+      if (!is.null(simple_conn)) {
+        dbDisconnect(simple_conn)
+        return("✅ База данных: Доступна (простое подключение)\n❌ Пул соединений: Не создан")
       } else {
-        return("❌ База данных: Не подключено (ни пул, ни прямое подключение не работают)")
+        return("❌ База данных: Не подключено (ни пул, ни простое подключение не работают)")
       }
     } else {
       tryCatch({
