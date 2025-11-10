@@ -1,4 +1,3 @@
-#6120.Доходы по дивидендам
 library(shiny)
 library(shinydashboard)
 library(rhandsontable)
