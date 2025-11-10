@@ -41,7 +41,11 @@ initialize_database <- function() {
     return(FALSE)
   }
   
-  on.exit(dbDisconnect(con))
+  on.exit({
+    if (dbIsValid(con)) {
+      dbDisconnect(con)
+    }
+  })
   
   tryCatch({
     create_table_sql <- "
@@ -114,7 +118,11 @@ save_data_to_neon <- function(data, table_name, session_id) {
   tryCatch({
     con <- connect_to_neon()
     if (is.null(con)) return(FALSE)
-    on.exit(dbDisconnect(con))
+    on.exit({
+      if (dbIsValid(con)) {
+        dbDisconnect(con)
+      }
+    })
     
     # Clear previous session data
     delete_sql <- paste("DELETE FROM", table_name, "WHERE session_id = $1")
@@ -165,7 +173,11 @@ load_data_from_neon <- function(table_name, session_id = NULL) {
   tryCatch({
     con <- connect_to_neon()
     if (is.null(con)) return(NULL)
-    on.exit(dbDisconnect(con))
+    on.exit({
+      if (dbIsValid(con)) {
+        dbDisconnect(con)
+      }
+    })
     
     if (is.null(session_id)) {
       # Load most recent data
@@ -244,7 +256,11 @@ get_available_sessions <- function() {
   tryCatch({
     con <- connect_to_neon()
     if (is.null(con)) return(NULL)
-    on.exit(dbDisconnect(con))
+    on.exit({
+      if (dbIsValid(con)) {
+        dbDisconnect(con)
+      }
+    })
     
     sessions <- dbGetQuery(con, 
       "SELECT DISTINCT session_id, MAX(created_at) as last_updated 
@@ -482,7 +498,9 @@ server <- function(input, output, session) {
     df6120.1 = NULL,
     df6120.2 = NULL,
     df6120.1_2 = NULL,
-    df6120.2_2 = NULL
+    df6120.2_2 = NULL,
+    df6120.1_1 = NULL,
+    df6120.2_1 = NULL
   )
   
   # Initialize database and data on app start
@@ -518,6 +536,8 @@ server <- function(input, output, session) {
     # Initialize filtered tables
     data$df6120.1_2 <- copy(DF6120.1_2)
     data$df6120.2_2 <- copy(DF6120.2_2)
+    data$df6120.1_1 <- copy(DF6120.1)
+    data$df6120.2_1 <- copy(DF6120.2)
   })
   
   # Update session selector
@@ -598,6 +618,8 @@ server <- function(input, output, session) {
     data$df6120.2 <- copy(DF6120.2)
     data$df6120.1_2 <- copy(DF6120.1_2)
     data$df6120.2_2 <- copy(DF6120.2_2)
+    data$df6120.1_1 <- copy(DF6120.1)
+    data$df6120.2_1 <- copy(DF6120.2)
     
     shinyalert("New Session", paste("Started new session:", new_id), type = "info")
   })
@@ -608,26 +630,23 @@ server <- function(input, output, session) {
   })
   
   # Auto-save with debouncing
-  auto_save_6120 <- debounce(
-    observe({
-      req(input$table6120Item1, data$df6120)
-      data$df6120 <- hot_to_r(input$table6120Item1)
-      save_data_to_neon(data$df6120, "app_data_6120", session_id())
-    }), 3000)
+  auto_save_6120 <- observe({
+    req(input$table6120Item1, data$df6120)
+    data$df6120 <- hot_to_r(input$table6120Item1)
+    save_data_to_neon(data$df6120, "app_data_6120", session_id())
+  })
   
-  auto_save_6120_1 <- debounce(
-    observe({
-      req(input$table6120.1Item1, data$df6120.1)
-      data$df6120.1 <- hot_to_r(input$table6120.1Item1)
-      save_data_to_neon(data$df6120.1, "app_data_6120_1", session_id())
-    }), 3000)
+  auto_save_6120_1 <- observe({
+    req(input$table6120.1Item1, data$df6120.1)
+    data$df6120.1 <- hot_to_r(input$table6120.1Item1)
+    save_data_to_neon(data$df6120.1, "app_data_6120_1", session_id())
+  })
   
-  auto_save_6120_2 <- debounce(
-    observe({
-      req(input$table6120.2Item1, data$df6120.2)
-      data$df6120.2 <- hot_to_r(input$table6120.2Item1)
-      save_data_to_neon(data$df6120.2, "app_data_6120_2", session_id())
-    }), 3000)
+  auto_save_6120_2 <- observe({
+    req(input$table6120.2Item1, data$df6120.2)
+    data$df6120.2 <- hot_to_r(input$table6120.2Item1)
+    save_data_to_neon(data$df6120.2, "app_data_6120_2", session_id())
+  })
   
   # Update data from tables
   observeEvent(input$table6120Item1, {
