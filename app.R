@@ -474,7 +474,7 @@ load_data_from_neon <- function(table_name, session_id = NULL) {
   })
 }
 
-# Get available sessions with improved error handling
+# Get available sessions with improved error handling - MODIFIED: Only last 3 sessions
 get_available_sessions <- function() {
   conn <- create_simple_connection()
   if (is.null(conn)) {
@@ -494,7 +494,8 @@ get_available_sessions <- function() {
        ) AS combined 
        WHERE session_id IS NOT NULL
        GROUP BY session_id 
-       ORDER BY last_updated DESC")
+       ORDER BY last_updated DESC
+       LIMIT 3")  # MODIFIED: Only get last 3 sessions
     
     if (nrow(sessions) == 0) {
       message("No sessions found in database")
@@ -591,7 +592,7 @@ DF6120.2_2 <- data.table(
   stringsAsFactors = FALSE
 )
 
-# UI with enhanced connection status
+# UI with enhanced connection status - MODIFIED: Removed "New Session" button
 ui <- fluidPage(
   tags$head(
     tags$script(HTML("
@@ -747,12 +748,11 @@ ui <- fluidPage(
                 h4("Управление сессиями"),
                 selectInput("session_selector", "Выберите сессию для загрузки:", choices = NULL, width = "100%"),
                 fluidRow(
-                  column(4, actionButton("load_session_btn", "Загрузить сессию", 
+                  # MODIFIED: Removed "New Session" button, adjusted column widths
+                  column(6, actionButton("load_session_btn", "Загрузить сессию", 
                                        icon = icon("folder-open"), class = "btn-success", width = "100%")),
-                  column(4, actionButton("save_session_btn", "Сохранить текущую сессию", 
-                                       icon = icon("save"), class = "btn-warning", width = "100%")),
-                  column(4, actionButton("new_session_btn", "Новая сессия", 
-                                       icon = icon("plus"), class = "btn-danger", width = "100%"))
+                  column(6, actionButton("save_session_btn", "Сохранить текущую сессию", 
+                                       icon = icon("save"), class = "btn-warning", width = "100%"))
                 )
               ),
               br(),
@@ -1007,7 +1007,7 @@ server <- function(input, output, session) {
     data$df6120.2_1 <- copy(DF6120.2)
   })
   
-  # Update session selector with enhanced error handling
+  # Update session selector with enhanced error handling - MODIFIED: Only shows last 3 sessions
   observe({
     if (r$db_initialized) {
       tryCatch({
@@ -1024,7 +1024,7 @@ server <- function(input, output, session) {
     }
   })
   
-  # OPTIMIZED: Enhanced session loading with progress indication
+  # IMPROVED: Enhanced session loading with better error handling and data validation
   observeEvent(input$load_session_btn, {
     req(input$session_selector, input$session_selector != "")
     
@@ -1050,21 +1050,72 @@ server <- function(input, output, session) {
           incProgress(0.3, detail = "Загрузка таблицы 6120...")
           neon_data_6120 <- load_data_from_neon("app_data_6120", selected_session)
           if (!is.null(neon_data_6120) && nrow(neon_data_6120) > 0) {
-            data$df6120 <- as.data.table(neon_data_6120)
+            # Ensure column names match expected format
+            if (all(c("account_name", "initial_balance", "debit", "credit", "final_balance") %in% names(neon_data_6120))) {
+              # Convert to data.table and rename columns to match UI expectations
+              temp_data <- as.data.table(neon_data_6120)
+              setnames(temp_data, 
+                      c("account_name", "initial_balance", "debit", "credit", "final_balance"),
+                      c("Счет (субчет)", "Сальдо начальное", "Дебет", "Кредит", "Сальдо конечное"))
+              data$df6120 <- temp_data
+            } else {
+              message("Column mismatch in loaded data for table 6120")
+              data$df6120 <- copy(DF6120)
+            }
+          } else {
+            data$df6120 <- copy(DF6120)
           }
           
           # Load table 2
           incProgress(0.3, detail = "Загрузка таблицы 6120.1...")
           neon_data_6120_1 <- load_data_from_neon("app_data_6120_1", selected_session)
           if (!is.null(neon_data_6120_1) && nrow(neon_data_6120_1) > 0) {
-            data$df6120.1 <- as.data.table(neon_data_6120_1)
+            # Ensure we have the expected columns
+            expected_cols <- c("operation_date", "document_number", "income_account", "dividend_period",
+                              "operation_description", "accounting_method", "initial_balance", 
+                              "credit", "debit", "correspondence_debit", "correspondence_credit", "final_balance")
+            
+            if (all(expected_cols %in% names(neon_data_6120_1))) {
+              temp_data <- as.data.table(neon_data_6120_1)
+              setnames(temp_data, expected_cols,
+                      c("Дата операции", "Номер первичного документа", "Счет № статьи дохода",
+                        "Период, к которому относятся дивиденды", "Содержание операции", "Метод учета",
+                        "Сальдо начальное", "Кредит", "Дебет", 
+                        "Корреспонденция счетов: Счет № (дебет)", "Корреспонденция счетов: Счет № (кредит)", 
+                        "Сальдо конечное"))
+              data$df6120.1 <- temp_data
+            } else {
+              message("Column mismatch in loaded data for table 6120.1")
+              data$df6120.1 <- copy(DF6120.1)
+            }
+          } else {
+            data$df6120.1 <- copy(DF6120.1)
           }
           
           # Load table 3
           incProgress(0.3, detail = "Загрузка таблицы 6120.2...")
           neon_data_6120_2 <- load_data_from_neon("app_data_6120_2", selected_session)
           if (!is.null(neon_data_6120_2) && nrow(neon_data_6120_2) > 0) {
-            data$df6120.2 <- as.data.table(neon_data_6120_2)
+            # Ensure we have the expected columns
+            expected_cols <- c("operation_date", "document_number", "income_account", "dividend_period",
+                              "operation_description", "accounting_method", "initial_balance", 
+                              "credit", "debit", "correspondence_debit", "correspondence_credit", "final_balance")
+            
+            if (all(expected_cols %in% names(neon_data_6120_2))) {
+              temp_data <- as.data.table(neon_data_6120_2)
+              setnames(temp_data, expected_cols,
+                      c("Дата операции", "Номер первичного документа", "Счет № статьи дохода",
+                        "Период, к которому относятся дивиденды", "Содержание операции", "Метод учета",
+                        "Сальдо начальное", "Кредит", "Дебет", 
+                        "Корреспонденция счетов: Счет № (дебет)", "Корреспонденция счетов: Счет № (кредит)", 
+                        "Сальдо конечное"))
+              data$df6120.2 <- temp_data
+            } else {
+              message("Column mismatch in loaded data for table 6120.2")
+              data$df6120.2 <- copy(DF6120.2)
+            }
+          } else {
+            data$df6120.2 <- copy(DF6120.2)
           }
           
           incProgress(0.1, detail = "Завершение...")
@@ -1079,6 +1130,7 @@ server <- function(input, output, session) {
         
       }, error = function(e) {
         shinyalert("Ошибка", paste("Ошибка при загрузке сессии:", e$message), type = "error")
+        message("Detailed error in session loading: ", e$message)
       }, finally = {
         # Hide loading overlay
         r$show_loading <- FALSE
@@ -1141,37 +1193,7 @@ server <- function(input, output, session) {
     }
   })
   
-  # Create new session with confirmation
-  observeEvent(input$new_session_btn, {
-    shinyalert(
-      title = "Новая сессия",
-      text = "Вы уверены, что хотите создать новую сессию? Все несохраненные данные будут потеряны.",
-      type = "warning",
-      showCancelButton = TRUE,
-      confirmButtonText = "Создать",
-      cancelButtonText = "Отмена",
-      callbackR = function(value) {
-        if (value) {
-          new_id <- paste0("session_", as.integer(Sys.time()), "_", 
-                          sprintf("%04d", sample(1000:9999, 1)), "_",
-                          sprintf("%06d", sample(100000:999999, 1)))
-          session_id(new_id)
-          
-          # Reset data to default
-          data$df6120 <- copy(DF6120)
-          data$df6120.1 <- copy(DF6120.1)
-          data$df6120.2 <- copy(DF6120.2)
-          data$df6120.1_2 <- copy(DF6120.1_2)
-          data$df6120.2_2 <- copy(DF6120.2_2)
-          data$df6120.1_1 <- copy(DF6120.1)
-          data$df6120.2_1 <- copy(DF6120.2)
-          
-          shinyalert("Новая сессия", paste("Создана новая сессия:", new_id), type = "info")
-          showNotification("Создана новая сессия с чистыми данными", type = "message")
-        }
-      }
-    )
-  })
+  # REMOVED: New session button functionality completely removed as per requirement
   
   # Display current session info
   output$current_session_info <- renderText({
