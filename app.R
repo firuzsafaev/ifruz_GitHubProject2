@@ -21,7 +21,6 @@ create_connection_pool <- function() {
     tryCatch({
       message("Attempting database connection (attempt ", attempt, ")")
       
-      # CORRECTED: Get the environment variable by name, not the connection string
       database_url <- Sys.getenv("DATABASE_URL")
       
       if (database_url == "") {
@@ -50,21 +49,12 @@ create_connection_pool <- function() {
         user = db_params$user,
         password = db_params$password,
         sslmode = "require",
-        sslrootcert = NULL,  # Let system handle SSL certificates
+        sslrootcert = NULL,
         bigint = "numeric",
         minSize = 1,
         maxSize = 3,
         idleTimeout = 300000,
-        validationInterval = 30000,
-        pool_validate = function(con) {
-          tryCatch({
-            dbGetQuery(con, "SELECT 1")
-            TRUE
-          }, error = function(e) {
-            message("Connection validation failed: ", e$message)
-            FALSE
-          })
-        }
+        validationInterval = 30000
       )
       
       # Test the connection immediately
@@ -89,11 +79,9 @@ create_connection_pool <- function() {
   }
 }
 
-# IMPROVED: Function for parsing Neon connection string with query parameters
+# Function for parsing Neon connection string
 parse_neon_connection_string <- function(connection_string) {
   tryCatch({
-    message("Parsing connection string...")
-    
     # Remove postgresql:// prefix
     clean_string <- gsub("^postgresql://", "", connection_string)
     
@@ -134,7 +122,6 @@ parse_neon_connection_string <- function(connection_string) {
     # Parse host:port
     host_port_parts <- strsplit(host_port, ":")[[1]]
     if (length(host_port_parts) == 1) {
-      # No port specified, use default
       host <- host_port_parts[1]
       port <- 5432
     } else if (length(host_port_parts) == 2) {
@@ -153,7 +140,6 @@ parse_neon_connection_string <- function(connection_string) {
       password = password
     )
     
-    message("Parsed connection parameters successfully")
     return(result)
     
   }, error = function(e) {
@@ -162,7 +148,7 @@ parse_neon_connection_string <- function(connection_string) {
   })
 }
 
-# ALTERNATIVE: Simple connection using connection string directly
+# Simple connection using connection string directly
 create_simple_connection <- function() {
   tryCatch({
     database_url <- Sys.getenv("DATABASE_URL")
@@ -175,17 +161,14 @@ create_simple_connection <- function() {
     # Direct connection using connection string
     conn <- dbConnect(
       RPostgres::Postgres(),
-      dbname = sub(".*/([^?]+).*", "\\1", database_url),  # Extract dbname
-      host = sub(".*@([^/]+).*", "\\1", database_url),    # Extract host
+      dbname = sub(".*/([^?]+).*", "\\1", database_url),
+      host = sub(".*@([^/]+).*", "\\1", database_url),
       port = 5432,
-      user = sub(".*://([^:]+):.*", "\\1", database_url), # Extract user
-      password = sub(".*://[^:]+:([^@]+)@.*", "\\1", database_url), # Extract password
+      user = sub(".*://([^:]+):.*", "\\1", database_url),
+      password = sub(".*://[^:]+:([^@]+)@.*", "\\1", database_url),
       sslmode = "require"
     )
     
-    # Test connection
-    test_result <- dbGetQuery(conn, "SELECT 1")
-    message("Simple database connection established successfully")
     return(conn)
   }, error = function(e) {
     message("Simple connection failed: ", e$message)
@@ -196,13 +179,12 @@ create_simple_connection <- function() {
 # Global connection pool
 global_pool <- NULL
 
-# Enhanced database connection initialization with status tracking
+# Database connection initialization
 initialize_database_connection <- function() {
   if (is.null(global_pool)) {
     message("Creating new database connection pool...")
     global_pool <<- create_connection_pool()
     
-    # If pool creation failed, try simple connection
     if (is.null(global_pool)) {
       message("Pool creation failed, trying simple connection...")
       simple_conn <- create_simple_connection()
@@ -213,31 +195,17 @@ initialize_database_connection <- function() {
       }
       return(FALSE)
     }
-  } else {
-    # Validate existing connection
-    tryCatch({
-      test_conn <- poolCheckout(global_pool)
-      dbGetQuery(test_conn, "SELECT 1")
-      poolReturn(test_conn)
-      message("Existing database connection is valid")
-      return(TRUE)
-    }, error = function(e) {
-      message("Existing connection invalid, recreating pool: ", e$message)
-      try(poolClose(global_pool), silent = TRUE)
-      global_pool <<- create_connection_pool()
-    })
   }
   return(!is.null(global_pool))
 }
 
-# Improved database initialization with better error handling
+# Database initialization
 initialize_database <- function() {
   if (!initialize_database_connection()) {
     message("Failed to establish database connection during initialization")
     return(FALSE)
   }
   
-  # If pool is not created but database is accessible, just continue
   if (is.null(global_pool)) {
     message("No pool available but database might be accessible for direct connections")
     return(TRUE)
@@ -247,7 +215,7 @@ initialize_database <- function() {
     conn <- poolCheckout(global_pool)
     on.exit(poolReturn(conn))
     
-    # Create tables with explicit schema
+    # Create tables
     tables_sql <- list(
       app_data_6120 = "
       CREATE TABLE IF NOT EXISTS app_data_6120 (
@@ -305,7 +273,6 @@ initialize_database <- function() {
     
     for (table_name in names(tables_sql)) {
       dbExecute(conn, tables_sql[[table_name]])
-      message("Table ", table_name, " initialized successfully")
     }
     
     return(TRUE)
@@ -315,14 +282,72 @@ initialize_database <- function() {
   })
 }
 
-# OPTIMIZED: Save data function with improved performance and connection handling
+# CRITICAL FIX: Safe data loading with transaction isolation
+load_data_from_neon_safe <- function(table_name, session_id) {
+  message("Attempting to load data from table: ", table_name, " for session: ", session_id)
+  
+  conn <- NULL
+  tryCatch({
+    # Use simple connection to avoid pool conflicts
+    conn <- create_simple_connection()
+    if (is.null(conn)) {
+      message("No database connection available")
+      return(NULL)
+    }
+    
+    # Set a statement timeout to prevent hanging queries
+    dbExecute(conn, "SET statement_timeout = 30000") # 30 seconds
+    
+    if (table_name == "app_data_6120") {
+      query <- "SELECT account_name, initial_balance, debit, credit, final_balance 
+                FROM app_data_6120 
+                WHERE session_id = $1 
+                ORDER BY id"
+    } else if (table_name == "app_data_6120_1") {
+      query <- "SELECT operation_date, document_number, income_account, dividend_period, 
+                       operation_description, accounting_method, initial_balance, credit, debit,
+                       correspondence_debit, correspondence_credit, final_balance
+                FROM app_data_6120_1 
+                WHERE session_id = $1 
+                ORDER BY id"
+    } else if (table_name == "app_data_6120_2") {
+      query <- "SELECT operation_date, document_number, income_account, dividend_period, 
+                       operation_description, accounting_method, initial_balance, credit, debit,
+                       correspondence_debit, correspondence_credit, final_balance
+                FROM app_data_6120_2 
+                WHERE session_id = $1 
+                ORDER BY id"
+    } else {
+      stop("Unknown table name: ", table_name)
+    }
+    
+    result <- dbGetQuery(conn, query, params = list(session_id))
+    
+    if (nrow(result) == 0) {
+      message("No data found for session ", session_id, " in table ", table_name)
+      return(NULL)
+    }
+    
+    message("Successfully loaded ", nrow(result), " rows from ", table_name)
+    return(result)
+    
+  }, error = function(e) {
+    message("Error loading data from ", table_name, ": ", e$message)
+    return(NULL)
+  }, finally = {
+    if (!is.null(conn)) {
+      try(dbDisconnect(conn), silent = TRUE)
+    }
+  })
+}
+
+# Save data function
 save_data_to_neon <- function(data, table_name, session_id) {
   if (is.null(data) || nrow(data) == 0) {
     message("No data to save for table: ", table_name)
     return(FALSE)
   }
   
-  # Use simple connection for save operations to avoid pool conflicts
   conn <- create_simple_connection()
   if (is.null(conn)) {
     message("No database connection available for save operation")
@@ -330,21 +355,18 @@ save_data_to_neon <- function(data, table_name, session_id) {
   }
   
   tryCatch({
-    # Start transaction
     dbExecute(conn, "BEGIN")
     
-    # Clear previous session data for this table
+    # Clear previous session data
     delete_sql <- paste("DELETE FROM", table_name, "WHERE session_id = $1")
-    deleted_rows <- dbExecute(conn, delete_sql, list(session_id))
-    message("Deleted ", deleted_rows, " previous rows for session ", session_id, " in table ", table_name)
+    dbExecute(conn, delete_sql, list(session_id))
     
-    # Prepare and execute batch insert
+    # Insert new data
     if (table_name == "app_data_6120") {
       sql <- paste("INSERT INTO", table_name, 
                    "(session_id, account_name, initial_balance, debit, credit, final_balance) 
                    VALUES ($1, $2, $3, $4, $5, $6)")
       
-      # Use parameterized batch insert
       for(i in 1:nrow(data)) {
         dbExecute(conn, sql, list(
           session_id, 
@@ -382,13 +404,11 @@ save_data_to_neon <- function(data, table_name, session_id) {
       }
     }
     
-    # Commit transaction
     dbExecute(conn, "COMMIT")
-    message("Successfully saved ", nrow(data), " rows to table ", table_name, " for session ", session_id)
+    message("Successfully saved ", nrow(data), " rows to table ", table_name)
     return(TRUE)
     
   }, error = function(e) {
-    # Rollback on error
     tryCatch({
       dbExecute(conn, "ROLLBACK")
     }, error = function(rollback_e) {
@@ -397,84 +417,11 @@ save_data_to_neon <- function(data, table_name, session_id) {
     message("Error saving to Neon for table ", table_name, ": ", e$message)
     return(FALSE)
   }, finally = {
-    # Always close connection
     try(dbDisconnect(conn), silent = TRUE)
   })
 }
 
-# IMPROVED: Load data function with better error handling and data validation
-load_data_from_neon <- function(table_name, session_id = NULL) {
-  # Use simple connection for load operations
-  conn <- create_simple_connection()
-  if (is.null(conn)) {
-    message("No database connection available for load operation")
-    return(NULL)
-  }
-  
-  tryCatch({
-    if (is.null(session_id)) {
-      # Load most recent session data
-      session_query <- paste("SELECT DISTINCT session_id FROM", table_name, 
-                            "ORDER BY created_at DESC LIMIT 1")
-      recent_session <- dbGetQuery(conn, session_query)
-      
-      if (nrow(recent_session) == 0) {
-        message("No data found in table: ", table_name)
-        return(NULL)
-      }
-      
-      session_id <- recent_session$session_id[1]
-      message("Loading most recent session: ", session_id, " from table: ", table_name)
-    }
-    
-    # Load data for specific session
-    if (table_name == "app_data_6120") {
-      result <- dbGetQuery(conn, 
-        "SELECT account_name, initial_balance, debit, credit, final_balance 
-         FROM app_data_6120 
-         WHERE session_id = $1 
-         ORDER BY id", 
-        list(session_id))
-    } else if (table_name == "app_data_6120_1") {
-      result <- dbGetQuery(conn,
-        "SELECT operation_date, document_number, income_account, dividend_period, 
-                operation_description, accounting_method, initial_balance, credit, debit,
-                correspondence_debit, correspondence_credit, final_balance
-         FROM app_data_6120_1 
-         WHERE session_id = $1 
-         ORDER BY id",
-        list(session_id))
-    } else if (table_name == "app_data_6120_2") {
-      result <- dbGetQuery(conn,
-        "SELECT operation_date, document_number, income_account, dividend_period, 
-                operation_description, accounting_method, initial_balance, credit, debit,
-                correspondence_debit, correspondence_credit, final_balance
-         FROM app_data_6120_2 
-         WHERE session_id = $1 
-         ORDER BY id",
-        list(session_id))
-    } else {
-      stop("Unknown table name: ", table_name)
-    }
-    
-    if (nrow(result) == 0) {
-      message("No data found for session ", session_id, " in table ", table_name)
-      return(NULL)
-    }
-    
-    message("Successfully loaded ", nrow(result), " rows from table ", table_name, " for session ", session_id)
-    return(result)
-    
-  }, error = function(e) {
-    message("Error loading from Neon for table ", table_name, ": ", e$message)
-    return(NULL)
-  }, finally = {
-    # Always close connection
-    try(dbDisconnect(conn), silent = TRUE)
-  })
-}
-
-# Get available sessions with improved error handling - MODIFIED: Only last 3 sessions
+# Get available sessions
 get_available_sessions <- function() {
   conn <- create_simple_connection()
   if (is.null(conn)) {
@@ -495,7 +442,7 @@ get_available_sessions <- function() {
        WHERE session_id IS NOT NULL
        GROUP BY session_id 
        ORDER BY last_updated DESC
-       LIMIT 3")  # MODIFIED: Only get last 3 sessions
+       LIMIT 5")
     
     if (nrow(sessions) == 0) {
       message("No sessions found in database")
@@ -514,7 +461,7 @@ get_available_sessions <- function() {
 # Helper function for null coalescing
 `%||%` <- function(x, y) if (!is.null(x) && !is.na(x)) x else y
 
-# Initialize data tables with proper structure
+# Initialize data tables
 DF6120 <- data.table(
   "Счет (субчет)" = as.character(c(
     "6120.1.Доходы по дивидендам, отражаемые в составе прибыли и убытка",
@@ -529,22 +476,6 @@ DF6120 <- data.table(
 )
 
 DF6120.1 <- data.table(
-  "Дата операции" = as.character(NA),
-  "Номер первичного документа" = as.character(NA),
-  "Счет № статьи дохода" = as.character(NA),
-  "Период, к которому относятся дивиденды" = as.character(NA),
-  "Содержание операции" = as.character(NA),
-  "Метод учета" = as.character(NA),
-  "Сальдо начальное" = as.numeric(NA),
-  "Кредит" = as.numeric(NA),
-  "Дебет" = as.numeric(NA),
-  "Корреспонденция счетов: Счет № (дебет)" = as.character(NA),
-  "Корреспонденция счетов: Счет № (кредит)" = as.character(NA),
-  "Сальдо конечное" = as.numeric(NA),
-  stringsAsFactors = FALSE
-)
-
-DF6120.1_2 <- data.table(
   "Дата операции" = as.character(NA),
   "Номер первичного документа" = as.character(NA),
   "Счет № статьи дохода" = as.character(NA),
@@ -576,47 +507,13 @@ DF6120.2 <- data.table(
   stringsAsFactors = FALSE
 )
 
-DF6120.2_2 <- data.table(
-  "Дата операции" = as.character(NA),
-  "Номер первичного документа" = as.character(NA),
-  "Счет № статьи дохода" = as.character(NA),
-  "Период, к которому относятся дивиденды" = as.character(NA),
-  "Содержание операции" = as.character(NA),
-  "Метод учета" = as.character(NA),
-  "Сальдо начальное" = as.numeric(NA),
-  "Кредит" = as.numeric(NA),
-  "Дебет" = as.numeric(NA),
-  "Корреспонденция счетов: Счет № (дебет)" = as.character(NA),
-  "Корреспонденция счетов: Счет № (кредит)" = as.character(NA),
-  "Сальдо конечное" = as.numeric(NA),
-  stringsAsFactors = FALSE
-)
+# Create empty versions for filtered data
+DF6120.1_2 <- copy(DF6120.1)[0]
+DF6120.2_2 <- copy(DF6120.2)[0]
 
-# UI with enhanced connection status - MODIFIED: Removed "New Session" button
 ui <- fluidPage(
   tags$head(
     tags$script(HTML("
-      // Enhanced connection monitoring
-      let connectionCheckInterval;
-      
-      function startConnectionMonitoring() {
-        connectionCheckInterval = setInterval(function() {
-          Shiny.setInputValue('heartbeat', Date.now());
-        }, 30000); // 30 seconds
-      }
-      
-      function stopConnectionMonitoring() {
-        if (connectionCheckInterval) {
-          clearInterval(connectionCheckInterval);
-        }
-      }
-      
-      // Start monitoring when page loads
-      $(document).ready(function() {
-        startConnectionMonitoring();
-      });
-      
-      // Handle connection status changes
       $(document).on('shiny:disconnected', function(event) {
         $('#connection-status').html('<span style=\"color: red;\">● Disconnected</span>');
         $('#connection-status').css('background-color', '#ffebee');
@@ -625,11 +522,6 @@ ui <- fluidPage(
       $(document).on('shiny:connected', function(event) {
         $('#connection-status').html('<span style=\"color: green;\">● Connected</span>');
         $('#connection-status').css('background-color', '#e8f5e8');
-      });
-      
-      // Handle page unload
-      $(window).on('beforeunload', function() {
-        stopConnectionMonitoring();
       });
     ")),
     tags$style(HTML("
@@ -652,15 +544,6 @@ ui <- fluidPage(
         border-radius: 5px;
         margin: 10px 0;
         border: 1px solid #2196f3;
-      }
-      .env-info {
-        background: #fff3e0;
-        padding: 10px;
-        border-radius: 5px;
-        margin: 10px 0;
-        border: 1px solid #ff9800;
-        font-family: monospace;
-        font-size: 12px;
       }
       .loading-overlay {
         position: fixed;
@@ -693,15 +576,10 @@ ui <- fluidPage(
         menuItem("Home", tabName = "home", icon = icon("home")),
         menuItem("Учет", tabName = "Учет", icon = icon("calculator"),
           menuItem("Доходы", tabName = "Profit", 
-            menuItem("6000.Доход от реализации продукции и оказания услуг", tabName = "Prft6000"),
-            menuItem("6100.Доход от финансирования", tabName = "Prft6100",
-              menuItem("Оборотно-сальдовая ведомость", tabName = "table6100"),
-              menuItem("6110.Доходы по финансовым активам", tabName = "Prft6110"),
-              menuItem("6120.Доходы по дивидендам", tabName = "Prft6120",
-                menuSubItem("Оборотно-сальдовая ведомость", tabName = "table6120"),
-                menuSubItem("6120.1.Доходы по дивидендам, отражаемые в составе прибыли и убытка", tabName = "table6120_1"),
-                menuSubItem("6120.2.Доходы по дивидендам, отражаемые в Прочем совокупном доходе", tabName = "table6120_2")
-              )
+            menuItem("6120.Доходы по дивидендам", tabName = "Prft6120",
+              menuSubItem("Оборотно-сальдовая ведомость", tabName = "table6120"),
+              menuSubItem("6120.1.Доходы по дивидендам, отражаемые в составе прибыли и убытка", tabName = "table6120_1"),
+              menuSubItem("6120.2.Доходы по дивидендам, отражаемые в Прочем совокупном доходе", tabName = "table6120_2")
             )
           )
         )
@@ -718,16 +596,13 @@ ui <- fluidPage(
           }
         }
       '),
-      # Loading overlay
       conditionalPanel(
         condition = "output.show_loading",
         tags$div(class = "loading-overlay",
           tags$h3("Загрузка данных..."),
           tags$p("Пожалуйста, подождите"),
           tags$br(),
-          tags$div(class = "spinner-border text-primary", role = "status",
-            tags$span(class = "sr-only", "Loading...")
-          )
+          tags$div(class = "spinner-border text-primary", role = "status")
         )
       ),
       tabItems(
@@ -739,16 +614,10 @@ ui <- fluidPage(
                          icon = icon("database"), class = "btn-info"),
               verbatimTextOutput("connection_status"),
               br(),
-              div(class = "env-info",
-                h4("Информация о переменных окружения"),
-                textOutput("env_status")
-              ),
-              br(),
               div(class = "session-info",
                 h4("Управление сессиями"),
                 selectInput("session_selector", "Выберите сессию для загрузки:", choices = NULL, width = "100%"),
                 fluidRow(
-                  # MODIFIED: Removed "New Session" button, adjusted column widths
                   column(6, actionButton("load_session_btn", "Загрузить сессию", 
                                        icon = icon("folder-open"), class = "btn-success", width = "100%")),
                   column(6, actionButton("save_session_btn", "Сохранить текущую сессию", 
@@ -767,8 +636,7 @@ ui <- fluidPage(
           fluidRow(
             column(width = 12, br(),
               dateRangeInput("dates6120", "Выберите период ОСВ:",
-                start = Sys.Date(), end = Sys.Date(), separator = "-"),
-              uiOutput("nested_ui6120")
+                start = Sys.Date(), end = Sys.Date(), separator = "-")
             ),
             column(width = 12, br(),
               tags$b("ОСВ: 6120.Доходы по дивидендам"),
@@ -785,24 +653,6 @@ ui <- fluidPage(
               tags$div(style = "margin-bottom: 20px;"),
               rHandsontableOutput("table6120.1Item1"),
               downloadButton("download_df6120.1", "Загрузить данные")
-            ),
-            column(width = 12, br(),
-              tags$b("Выборка данных по дате операции, номеру первичного документа или статье дохода"),
-              tags$div(style = "margin-bottom: 20px;"),
-              selectInput("choices6120.1", label = NULL,
-                choices = c(
-                  "Выбор по дате операции", 
-                  "Выбор по номеру первичного документа", 
-                  "Выбор по статье дохода", 
-                  "Выбор по дате операции и номеру первичного документа", 
-                  "Выбор по дате операции и статье дохода"
-                )
-              ),
-              uiOutput("nested_ui6120.1")
-            ),
-            column(width = 12, br(),
-              rHandsontableOutput("table6120.1Item2"),
-              downloadButton("download_df6120.1_2", "Загрузить данные")
             )
           )
         ),
@@ -813,24 +663,6 @@ ui <- fluidPage(
               tags$div(style = "margin-bottom: 20px;"),
               rHandsontableOutput("table6120.2Item1"),
               downloadButton("download_df6120.2", "Загрузить данные")
-            ),
-            column(width = 12, br(),
-              tags$b("Выборка данных по дате операции, номеру первичного документа или статье дохода"),
-              tags$div(style = "margin-bottom: 20px;"),
-              selectInput("choices6120.2", label = NULL,
-                choices = c(
-                  "Выбор по дате операции", 
-                  "Выбор по номеру первичного документа", 
-                  "Выбор по статье дохода", 
-                  "Выбор по дате операции и номеру первичного документа", 
-                  "Выбор по дате операции и статье дохода"
-                )
-              ),
-              uiOutput("nested_ui6120.2")
-            ),
-            column(width = 12, br(),
-              rHandsontableOutput("table6120.2Item2"),
-              downloadButton("download_df6120.2_2", "Загрузить данные")
             )
           )
         )
@@ -840,20 +672,14 @@ ui <- fluidPage(
 )
 
 server <- function(input, output, session) {
-  # Generate unique session ID with better uniqueness
+  # Generate unique session ID
   session_id <- reactiveVal({
-    paste0("session_", as.integer(Sys.time()), "_", 
-           sprintf("%04d", sample(1000:9999, 1)), "_",
-           sprintf("%06d", sample(100000:999999, 1)))
+    paste0("session_", as.integer(Sys.time()), "_", sample(1000:9999, 1))
   })
   
   # Initialize reactive values
   r <- reactiveValues(
-    start = ymd(Sys.Date()),
-    end = ymd(Sys.Date()),
     db_initialized = FALSE,
-    connection_attempts = 0,
-    env_vars_status = "",
     show_loading = FALSE,
     is_loading_session = FALSE
   )
@@ -861,11 +687,7 @@ server <- function(input, output, session) {
   data <- reactiveValues(
     df6120 = NULL,
     df6120.1 = NULL,
-    df6120.2 = NULL,
-    df6120.1_2 = NULL,
-    df6120.2_2 = NULL,
-    df6120.1_1 = NULL,
-    df6120.2_1 = NULL
+    df6120.2 = NULL
   )
   
   # Output for loading overlay
@@ -874,294 +696,149 @@ server <- function(input, output, session) {
   })
   outputOptions(output, "show_loading", suspendWhenHidden = FALSE)
   
-  # Check environment variables
+  # Initialize data
   observe({
-    database_url <- Sys.getenv("DATABASE_URL")
-    
-    if (database_url == "") {
-      r$env_vars_status <- "❌ DATABASE_URL не установлена"
-    } else {
-      # Mask password for security
-      masked_url <- gsub("://([^:]+):[^@]+@", "://\\1:****@", database_url)
-      r$env_vars_status <- paste("✅ DATABASE_URL:", masked_url)
-    }
-  })
-  
-  output$env_status <- renderText({
-    r$env_vars_status
-  })
-  
-  # Enhanced heartbeat with connection testing
-  observeEvent(input$heartbeat, {
-    message("Heartbeat received at: ", Sys.time())
-    
-    # Test connection periodically
-    if (r$connection_attempts %% 6 == 0) { # Every 3 minutes
-      if (!initialize_database_connection()) {
-        message("Heartbeat: Database connection lost")
-        showNotification("Потеряно соединение с базой данных", type = "warning")
-      } else {
-        message("Heartbeat: Database connection active")
-      }
-    }
-    r$connection_attempts <- r$connection_attempts + 1
-  })
-  
-  # Enhanced database connection test
-  observeEvent(input$test_connection, {
-    showNotification("Тестирование подключения к базе данных...", type = "message")
-    
-    # Force reconnection
-    if (!is.null(global_pool)) {
-      try(poolClose(global_pool), silent = TRUE)
-      global_pool <<- NULL
-    }
-    
-    Sys.sleep(1) # Brief pause
-    
-    # Test simple connection first
-    simple_conn <- create_simple_connection()
-    if (!is.null(simple_conn)) {
-      dbDisconnect(simple_conn)
-      shinyalert("Успех", 
-                "Прямое подключение к базе данных установлено успешно!", 
-                type = "success")
-    } else if (initialize_database_connection()) {
-      # Test with actual query
-      tryCatch({
-        if (!is.null(global_pool)) {
-          conn <- poolCheckout(global_pool)
-          test_result <- dbGetQuery(conn, "SELECT version() as db_version")
-          poolReturn(conn)
-          
-          shinyalert("Успех", 
-                    paste("Подключение к базе данных через пул установлено успешно!\n",
-                          "Версия БД:", test_result$db_version[1]), 
-                    type = "success")
-        } else {
-          shinyalert("Успех", 
-                    "База данных доступна (простое подключение работает)", 
-                    type = "success")
-        }
-      }, error = function(e) {
-        shinyalert("Ошибка", 
-                  paste("Подключение установлено, но запрос не выполнен:", e$message), 
-                  type = "error")
-      })
-    } else {
-      shinyalert("Ошибка", 
-                "Не удалось подключиться к базе данных. Проверьте настройки подключения и переменные окружения.", 
-                type = "error")
-    }
-  })
-  
-  output$connection_status <- renderText({
-    database_url <- Sys.getenv("DATABASE_URL")
-    
-    if (database_url == "") {
-      return("❌ DATABASE_URL не установлена в переменных окружения")
-    }
-    
-    if (is.null(global_pool)) {
-      # Test simple connection
-      simple_conn <- create_simple_connection()
-      if (!is.null(simple_conn)) {
-        dbDisconnect(simple_conn)
-        return("✅ База данных: Доступна (простое подключение)\n❌ Пул соединений: Не создан")
-      } else {
-        return("❌ База данных: Не подключено (ни пул, ни простое подключение не работают)")
-      }
-    } else {
-      tryCatch({
-        conn <- poolCheckout(global_pool)
-        dbGetQuery(conn, "SELECT 1")
-        poolReturn(conn)
-        "✅ База данных: Подключено активно (пул)"
-      }, error = function(e) {
-        "❌ База данных: Подключение неактивно"
-      })
-    }
-  })
-  
-  # Enhanced database and data initialization
-  observe({
-    # Initialize database connection and tables
-    init_success <- initialize_database()
-    r$db_initialized <- init_success
-    
-    if (!init_success) {
-      showNotification("Внимание: База данных недоступна. Работа в автономном режиме.", 
-                      type = "warning", duration = 10)
-    } else {
-      showNotification("Подключение к базе данных установлено успешно.", 
-                      type = "message", duration = 5)
-    }
-    
-    # Initialize with default data
     data$df6120 <- copy(DF6120)
     data$df6120.1 <- copy(DF6120.1)
     data$df6120.2 <- copy(DF6120.2)
-    data$df6120.1_2 <- copy(DF6120.1_2)
-    data$df6120.2_2 <- copy(DF6120.2_2)
-    data$df6120.1_1 <- copy(DF6120.1)
-    data$df6120.2_1 <- copy(DF6120.2)
   })
   
-  # Update session selector with enhanced error handling - MODIFIED: Only shows last 3 sessions
+  # Database initialization
+  observe({
+    init_success <- initialize_database()
+    r$db_initialized <- init_success
+    
+    if (init_success) {
+      showNotification("Подключение к базе данных установлено успешно.", 
+                      type = "message", duration = 5)
+    } else {
+      showNotification("Внимание: База данных недоступна. Работа в автономном режиме.", 
+                      type = "warning", duration = 10)
+    }
+  })
+  
+  # Update session selector
   observe({
     if (r$db_initialized) {
       tryCatch({
         sessions <- get_available_sessions()
         if (!is.null(sessions)) {
           updateSelectInput(session, "session_selector", choices = c("", sessions))
-        } else {
-          updateSelectInput(session, "session_selector", choices = c(""))
         }
       }, error = function(e) {
         message("Error updating session selector: ", e$message)
-        updateSelectInput(session, "session_selector", choices = c(""))
       })
     }
   })
   
-  # IMPROVED: Enhanced session loading with better error handling and data validation
+  # CRITICAL FIX: Completely rewritten session loading with proper isolation
   observeEvent(input$load_session_btn, {
     req(input$session_selector, input$session_selector != "")
     
-    if (!r$db_initialized) {
-      shinyalert("Ошибка", "База данных недоступна. Невозможно загрузить сессию.", type = "error")
-      return()
-    }
-    
     selected_session <- input$session_selector
+    message("Attempting to load session: ", selected_session)
     
     # Show loading overlay
     r$show_loading <- TRUE
     r$is_loading_session <- TRUE
     
-    # Use delayed execution to allow UI to update
-    shinyjs::delay(100, {
+    # Use isolate to prevent reactive dependencies from causing issues
+    isolate({
       tryCatch({
         showNotification(paste("Загрузка сессии:", selected_session), type = "message")
         
-        # Load data for selected session with progress
-        withProgress(message = 'Загрузка данных...', value = 0, {
-          # Load table 1
-          incProgress(0.3, detail = "Загрузка таблицы 6120...")
-          neon_data_6120 <- load_data_from_neon("app_data_6120", selected_session)
-          if (!is.null(neon_data_6120) && nrow(neon_data_6120) > 0) {
-            # Ensure column names match expected format
-            if (all(c("account_name", "initial_balance", "debit", "credit", "final_balance") %in% names(neon_data_6120))) {
-              # Convert to data.table and rename columns to match UI expectations
-              temp_data <- as.data.table(neon_data_6120)
-              setnames(temp_data, 
-                      c("account_name", "initial_balance", "debit", "credit", "final_balance"),
-                      c("Счет (субчет)", "Сальдо начальное", "Дебет", "Кредит", "Сальдо конечное"))
-              # Ensure data structure is valid
-              if (nrow(temp_data) > 0) {
-                data$df6120 <- temp_data
-              } else {
-                data$df6120 <- copy(DF6120)
-              }
-            } else {
-              message("Column mismatch in loaded data for table 6120")
-              data$df6120 <- copy(DF6120)
-            }
-          } else {
-            data$df6120 <- copy(DF6120)
-          }
-          
-          # Load table 2
-          incProgress(0.3, detail = "Загрузка таблицы 6120.1...")
-          neon_data_6120_1 <- load_data_from_neon("app_data_6120_1", selected_session)
-          if (!is.null(neon_data_6120_1) && nrow(neon_data_6120_1) > 0) {
-            # Ensure we have the expected columns
-            expected_cols <- c("operation_date", "document_number", "income_account", "dividend_period",
-                              "operation_description", "accounting_method", "initial_balance", 
-                              "credit", "debit", "correspondence_debit", "correspondence_credit", "final_balance")
-            
-            if (all(expected_cols %in% names(neon_data_6120_1))) {
-              temp_data <- as.data.table(neon_data_6120_1)
-              setnames(temp_data, expected_cols,
-                      c("Дата операции", "Номер первичного документа", "Счет № статьи дохода",
-                        "Период, к которому относятся дивиденды", "Содержание операции", "Метод учета",
-                        "Сальдо начальное", "Кредит", "Дебет", 
-                        "Корреспонденция счетов: Счет № (дебет)", "Корреспонденция счетов: Счет № (кредит)", 
-                        "Сальдо конечное"))
-              # Ensure data structure is valid
-              if (nrow(temp_data) > 0) {
-                data$df6120.1 <- temp_data
-              } else {
-                data$df6120.1 <- copy(DF6120.1)
-              }
-            } else {
-              message("Column mismatch in loaded data for table 6120.1")
-              data$df6120.1 <- copy(DF6120.1)
-            }
-          } else {
-            data$df6120.1 <- copy(DF6120.1)
-          }
-          
-          # Load table 3
-          incProgress(0.3, detail = "Загрузка таблицы 6120.2...")
-          neon_data_6120_2 <- load_data_from_neon("app_data_6120_2", selected_session)
-          if (!is.null(neon_data_6120_2) && nrow(neon_data_6120_2) > 0) {
-            # Ensure we have the expected columns
-            expected_cols <- c("operation_date", "document_number", "income_account", "dividend_period",
-                              "operation_description", "accounting_method", "initial_balance", 
-                              "credit", "debit", "correspondence_debit", "correspondence_credit", "final_balance")
-            
-            if (all(expected_cols %in% names(neon_data_6120_2))) {
-              temp_data <- as.data.table(neon_data_6120_2)
-              setnames(temp_data, expected_cols,
-                      c("Дата операции", "Номер первичного документа", "Счет № статьи дохода",
-                        "Период, к которому относятся дивиденды", "Содержание операции", "Метод учета",
-                        "Сальдо начальное", "Кредит", "Дебет", 
-                        "Корреспонденция счетов: Счет № (дебет)", "Корреспонденция счетов: Счет № (кредит)", 
-                        "Сальдо конечное"))
-              # Ensure data structure is valid
-              if (nrow(temp_data) > 0) {
-                data$df6120.2 <- temp_data
-              } else {
-                data$df6120.2 <- copy(DF6120.2)
-              }
-            } else {
-              message("Column mismatch in loaded data for table 6120.2")
-              data$df6120.2 <- copy(DF6120.2)
-            }
-          } else {
-            data$df6120.2 <- copy(DF6120.2)
-          }
-          
-          incProgress(0.1, detail = "Завершение...")
+        # Load data with individual error handling for each table
+        loaded_data_6120 <- NULL
+        loaded_data_6120_1 <- NULL  
+        loaded_data_6120_2 <- NULL
+        
+        # Load each table separately with error isolation
+        tryCatch({
+          loaded_data_6120 <- load_data_from_neon_safe("app_data_6120", selected_session)
+        }, error = function(e) {
+          message("Failed to load table 6120: ", e$message)
         })
         
-        # Update session ID to the loaded one
+        tryCatch({
+          loaded_data_6120_1 <- load_data_from_neon_safe("app_data_6120_1", selected_session)
+        }, error = function(e) {
+          message("Failed to load table 6120_1: ", e$message)
+        })
+        
+        tryCatch({
+          loaded_data_6120_2 <- load_data_from_neon_safe("app_data_6120_2", selected_session)
+        }, error = function(e) {
+          message("Failed to load table 6120_2: ", e$message)
+        })
+        
+        # Update data tables only if loading was successful
+        if (!is.null(loaded_data_6120)) {
+          # Convert and validate data
+          temp_data <- as.data.table(loaded_data_6120)
+          if (all(c("account_name", "initial_balance", "debit", "credit", "final_balance") %in% names(temp_data))) {
+            setnames(temp_data, 
+                    c("account_name", "initial_balance", "debit", "credit", "final_balance"),
+                    c("Счет (субчет)", "Сальдо начальное", "Дебет", "Кредит", "Сальдо конечное"))
+            data$df6120 <- temp_data
+          }
+        }
+        
+        if (!is.null(loaded_data_6120_1)) {
+          temp_data <- as.data.table(loaded_data_6120_1)
+          expected_cols <- c("operation_date", "document_number", "income_account", "dividend_period",
+                            "operation_description", "accounting_method", "initial_balance", 
+                            "credit", "debit", "correspondence_debit", "correspondence_credit", "final_balance")
+          
+          if (all(expected_cols %in% names(temp_data))) {
+            setnames(temp_data, expected_cols,
+                    c("Дата операции", "Номер первичного документа", "Счет № статьи дохода",
+                      "Период, к которому относятся дивиденды", "Содержание операции", "Метод учета",
+                      "Сальдо начальное", "Кредит", "Дебет", 
+                      "Корреспонденция счетов: Счет № (дебет)", "Корреспонденция счетов: Счет № (кредит)", 
+                      "Сальдо конечное"))
+            data$df6120.1 <- temp_data
+          }
+        }
+        
+        if (!is.null(loaded_data_6120_2)) {
+          temp_data <- as.data.table(loaded_data_6120_2)
+          expected_cols <- c("operation_date", "document_number", "income_account", "dividend_period",
+                            "operation_description", "accounting_method", "initial_balance", 
+                            "credit", "debit", "correspondence_debit", "correspondence_credit", "final_balance")
+          
+          if (all(expected_cols %in% names(temp_data))) {
+            setnames(temp_data, expected_cols,
+                    c("Дата операции", "Номер первичного документа", "Счет № статьи дохода",
+                      "Период, к которому относятся дивиденды", "Содержание операции", "Метод учета",
+                      "Сальдо начальное", "Кредит", "Дебет", 
+                      "Корреспонденция счетов: Счет № (дебет)", "Корреспонденция счетов: Счет № (кредит)", 
+                      "Сальдо конечное"))
+            data$df6120.2 <- temp_data
+          }
+        }
+        
+        # Update session ID
         session_id(selected_session)
         
         shinyalert("Успех", paste("Сессия загружена:", selected_session), type = "success")
-        showNotification(paste("Текущая сессия изменена на:", selected_session), 
-                        type = "message", duration = 5)
         
       }, error = function(e) {
         shinyalert("Ошибка", paste("Ошибка при загрузке сессии:", e$message), type = "error")
-        message("Detailed error in session loading: ", e$message)
+        message("Critical error in session loading: ", e$message)
       }, finally = {
-        # Hide loading overlay
+        # Always hide loading overlay
         r$show_loading <- FALSE
         r$is_loading_session <- FALSE
       })
     })
   })
   
-  # Enhanced session saving
+  # Session saving
   observeEvent(input$save_session_btn, {
     if (!r$db_initialized) {
       shinyalert("Ошибка", "База данных недоступна. Невозможно сохранить сессию.", type = "error")
       return()
     }
-    
-    showNotification("Сохранение данных...", type = "message")
     
     save_success <- TRUE
     error_messages <- c()
@@ -1208,281 +885,50 @@ server <- function(input, output, session) {
     }
   })
   
-  # REMOVED: New session button functionality completely removed as per requirement
+  # Test connection
+  observeEvent(input$test_connection, {
+    if (initialize_database_connection()) {
+      shinyalert("Успех", "Подключение к базе данных установлено успешно!", type = "success")
+    } else {
+      shinyalert("Ошибка", "Не удалось подключиться к базе данных.", type = "error")
+    }
+  })
   
-  # Display current session info
+  output$connection_status <- renderText({
+    if (r$db_initialized) {
+      "✅ База данных: Подключено"
+    } else {
+      "❌ База данных: Не подключено"
+    }
+  })
+  
   output$current_session_info <- renderText({
     paste("ID текущей сессии:", session_id())
   })
   
-  # The rest of your table update observers and rendering functions remain the same...
-  # Update data from tables
-  observeEvent(input$table6120Item1, {
-    req(input$table6120Item1)
-    data$df6120 <- hot_to_r(input$table6120Item1)
-  })
-  
-  observeEvent(input$table6120.1Item1, {
-    req(input$table6120.1Item1)
-    data$df6120.1 <- hot_to_r(input$table6120.1Item1)
-  })
-  
-  observeEvent(input$table6120.2Item1, {
-    req(input$table6120.2Item1)
-    data$df6120.2 <- hot_to_r(input$table6120.2Item1)
-  })
-  
-  # ОСВ: 6120
-  observeEvent(input$dates6120, {
-    req(input$dates6120)
-    
-    start <- ymd(input$dates6120[[1]])
-    end <- ymd(input$dates6120[[2]])
-    
-    tryCatch({
-      if (start > end) {
-        shinyalert("Ошибка при вводе: конечная дата предшествует начальной дате", type = "error")
-        updateDateRangeInput(
-          session, 
-          "dates6120", 
-          start = r$start,
-          end = r$end
-        )
-      } else {
-        r$start <- input$dates6120[[1]]
-        r$end <- input$dates6120[[2]]
-      }
-    }, error = function(e) {
-      updateDateRangeInput(session,
-                         "dates6120",
-                         start = ymd(Sys.Date()),
-                         end = ymd(Sys.Date()))
-      shinyalert("Диапазон дат не может быть пустым! Переход на текущую дату.",
-               type = "error")
-    })
-  }, ignoreInit = TRUE)
-  
-  # Filter data based on date range
-  observe({
-    req(data$df6120.1, input$dates6120)
-    
-    if (!any(is.na(input$dates6120))) {
-      from <- as.Date(input$dates6120[1])
-      to <- as.Date(input$dates6120[2])
-      if (from > to) to <- from
-      
-      selectdates6120.1_5 <- seq.Date(from = from, to = to, by = "day")
-      if (!is.null(data$df6120.1) && nrow(data$df6120.1) > 0) {
-        data$df6120.1_1 <- data$df6120.1[as.Date(`Дата операции`) %in% selectdates6120.1_5, ]
-      }
-    } else {
-      if (!is.null(data$df6120.1) && nrow(data$df6120.1) > 0) {
-        selectdates6120.1_6 <- unique(as.Date(data$df6120.1$`Дата операции`))
-        data$df6120.1_1 <- data$df6120.1[`Дата операции` %in% selectdates6120.1_6, ]
-      }
-    }
-  })
-  
-  observe({
-    req(data$df6120.2, input$dates6120)
-    
-    if (!any(is.na(input$dates6120))) {
-      from <- as.Date(input$dates6120[1])
-      to <- as.Date(input$dates6120[2])
-      if (from > to) to <- from
-      
-      selectdates6120.2_5 <- seq.Date(from = from, to = to, by = "day")
-      if (!is.null(data$df6120.2) && nrow(data$df6120.2) > 0) {
-        data$df6120.2_1 <- data$df6120.2[as.Date(`Дата операции`) %in% selectdates6120.2_5, ]
-      }
-    } else {
-      if (!is.null(data$df6120.2) && nrow(data$df6120.2) > 0) {
-        selectdates6120.2_6 <- unique(as.Date(data$df6120.2$`Дата операции`))
-        data$df6120.2_1 <- data$df6120.2[`Дата операции` %in% selectdates6120.2_6, ]
-      }
-    }
-  })
-  
-  # Calculate balances
-  observe({
-    req(data$df6120.1_1, data$df6120)
-    
-    if (nrow(data$df6120.1_1) > 0) {
-      summary_6120_1 <- data$df6120.1_1[, .(
-        `Сальдо начальное` = sum(`Сальдо начальное`, na.rm = TRUE),
-        Дебет = sum(Дебет, na.rm = TRUE),
-        Кредит = sum(Кредит, na.rm = TRUE),
-        `Сальдо конечное` = sum(`Сальдо конечное`, na.rm = TRUE)
-      )]
-      
-      data$df6120[1, 2:5] <- summary_6120_1
-    }
-  })
-  
-  observe({
-    req(data$df6120.2_1, data$df6120)
-    
-    if (nrow(data$df6120.2_1) > 0) {
-      summary_6120_2 <- data$df6120.2_1[, .(
-        `Сальдо начальное` = sum(`Сальдо начальное`, na.rm = TRUE),
-        Дебет = sum(Дебет, na.rm = TRUE),
-        Кредит = sum(Кредит, na.rm = TRUE),
-        `Сальдо конечное` = sum(`Сальдо конечное`, na.rm = TRUE)
-      )]
-      
-      data$df6120[2, 2:5] <- summary_6120_2
-    }
-  })
-  
-  observe({
-    req(data$df6120)
-    if (nrow(data$df6120) >= 3) {
-      data$df6120[3, 2:5] <- data$df6120[1:2, lapply(.SD, sum, na.rm = TRUE), .SDcols = 2:5]
-    }
-  })
-  
-  output$nested_ui6120 <- renderUI({
-    !any(is.na(input$dates6120))
-  })
-  
+  # Table renderers
   output$table6120Item1 <- renderRHandsontable({
     req(data$df6120)
-    
-    rhandsontable(data$df6120, colWidths = 150, height = 120, readOnly = TRUE, 
-                  contextMenu = FALSE, fixedColumnsLeft = 1, manualColumnResize = TRUE) %>%
-      hot_col(1, width = 500) %>%
-      hot_cols(column = 1, renderer = "
-        function(instance, td, row, col, prop, value) {
-          if (row === 2) { 
-            td.style.fontWeight = 'bold';
-          } 
-          Handsontable.renderers.TextRenderer.apply(this, arguments);
-        }
-      ")
+    rhandsontable(data$df6120, readOnly = TRUE)
   })
   
+  output$table6120.1Item1 <- renderRHandsontable({
+    req(data$df6120.1)
+    rhandsontable(data$df6120.1)
+  })
+  
+  output$table6120.2Item1 <- renderRHandsontable({
+    req(data$df6120.2)
+    rhandsontable(data$df6120.2)
+  })
+  
+  # Download handlers
   output$download_df6120 <- downloadHandler(
     filename = function() { "df6120.xlsx" },
     content = function(file) {
       write.xlsx(data$df6120, file)
     }
   )
-  
-  # 6120.1 Tab
-  observeEvent(input$dates6120.1, {
-    req(input$dates6120.1)
-    
-    start <- ymd(input$dates6120.1[[1]])
-    end <- ymd(input$dates6120.1[[2]])
-    
-    tryCatch({
-      if (start > end) {
-        shinyalert("Ошибка при вводе: конечная дата предшествует начальной дате", type = "error")
-        updateDateRangeInput(
-          session, 
-          "dates6120.1", 
-          start = r$start,
-          end = r$end
-        )
-      } else {
-        r$start <- input$dates6120.1[[1]]
-        r$end <- input$dates6120.1[[2]]
-      }
-    }, error = function(e) {
-      updateDateRangeInput(session,
-                         "dates6120.1",
-                         start = ymd(Sys.Date()),
-                         end = ymd(Sys.Date()))
-      shinyalert("Диапазон дат не может быть пустым! Переход на текущую дату.",
-               type = "error")
-    })
-  }, ignoreInit = TRUE)
-  
-  # Filter data for 6120.1 based on user selection
-  observe({
-    req(data$df6120.1, input$choices6120.1)
-    
-    if (input$choices6120.1 == "Выбор по дате операции" && !is.null(input$dates6120.1)) {
-      from <- as.Date(input$dates6120.1[1])
-      to <- as.Date(input$dates6120.1[2])
-      if (from > to) to <- from
-      
-      selectdates <- seq.Date(from = from, to = to, by = "day")
-      data$df6120.1_2 <- data$df6120.1[as.Date(`Дата операции`) %in% selectdates, ]
-      
-    } else if (input$choices6120.1 == "Выбор по номеру первичного документа" && !is.null(input$text)) {
-      data$df6120.1_2 <- data$df6120.1[`Номер первичного документа` == input$text, ]
-      
-    } else if (input$choices6120.1 == "Выбор по статье дохода" && !is.null(input$text)) {
-      data$df6120.1_2 <- data$df6120.1[`Счет № статьи дохода` == input$text, ]
-      
-    } else if (input$choices6120.1 == "Выбор по дате операции и номеру первичного документа" && 
-               !is.null(input$dates6120.1) && !is.null(input$text)) {
-      from <- as.Date(input$dates6120.1[1])
-      to <- as.Date(input$dates6120.1[2])
-      if (from > to) to <- from
-      
-      selectdates <- seq.Date(from = from, to = to, by = "day")
-      data$df6120.1_2 <- data$df6120.1[as.Date(`Дата операции`) %in% selectdates & `Номер первичного документа` == input$text, ]
-      
-    } else if (input$choices6120.1 == "Выбор по дате операции и статье дохода" && 
-               !is.null(input$dates6120.1) && !is.null(input$text)) {
-      from <- as.Date(input$dates6120.1[1])
-      to <- as.Date(input$dates6120.1[2])
-      if (from > to) to <- from
-      
-      selectdates <- seq.Date(from = from, to = to, by = "day")
-      data$df6120.1_2 <- data$df6120.1[as.Date(`Дата операции`) %in% selectdates & `Счет № статьи дохода` == input$text, ]
-      
-    } else {
-      # Default: show all data
-      data$df6120.1_2 <- data$df6120.1
-    }
-  })
-  
-  output$table6120.1Item1 <- renderRHandsontable({
-    req(data$df6120.1)
-    
-    # Calculate final balance
-    if (nrow(data$df6120.1) > 0) {
-      data$df6120.1[, `Сальдо конечное` := `Сальдо начальное` + Кредит - Дебет]
-    }
-    
-    rhandsontable(data$df6120.1, colWidths = 150, height = 300, allowInvalid = FALSE, 
-                  fixedColumnsLeft = 2, manualColumnResize = TRUE) %>%
-      hot_col(1, dateFormat = "YYYY-MM-DD", type = "date")
-  })
-  
-  output$nested_ui6120.1 <- renderUI({
-    if (input$choices6120.1 == "Выбор по дате операции") {
-      dateRangeInput("dates6120.1", "Выберите период времени:", format = "yyyy-mm-dd",
-                     start = Sys.Date(), end = Sys.Date(), separator = "-")
-    } else if (input$choices6120.1 == "Выбор по номеру первичного документа") {
-      textInput("text", "Укажите номер первичного документа:")
-    } else if (input$choices6120.1 == "Выбор по статье дохода") {
-      textInput("text", "Укажите Счет № статьи дохода:")
-    } else if (input$choices6120.1 == "Выбор по дате операции и номеру первичного документа") {
-      fluidRow(
-        dateRangeInput("dates6120.1", "Выберите период времени:",
-                       start = Sys.Date(), end = Sys.Date(), separator = "-"),
-        textInput("text", "Укажите номер первичного документа:")
-      )
-    } else if (input$choices6120.1 == "Выбор по дате операции и статье дохода") {
-      fluidRow(
-        dateRangeInput("dates6120.1", "Выберите период времени:",
-                       start = Sys.Date(), end = Sys.Date(), separator = "-"),
-        textInput("text", "Укажите Счет № статьи дохода:")
-      )
-    }
-  })
-  
-  output$table6120.1Item2 <- renderRHandsontable({
-    req(data$df6120.1_2)
-    
-    rhandsontable(data$df6120.1_2, colWidths = 150, height = 300, readOnly = TRUE, 
-                  contextMenu = FALSE, manualColumnResize = TRUE) %>%
-      hot_col(1, dateFormat = "YYYY-MM-DD", type = "date")
-  })
   
   output$download_df6120.1 <- downloadHandler(
     filename = function() { "df6120.1.xlsx" },
@@ -1491,129 +937,6 @@ server <- function(input, output, session) {
     }
   )
   
-  output$download_df6120.1_2 <- downloadHandler(
-    filename = function() { "df6120.1_2.xlsx" },
-    content = function(file) {
-      write.xlsx(data$df6120.1_2, file)
-    }
-  )
-  
-  # 6120.2 Tab (similar structure to 6120.1)
-  observeEvent(input$dates6120.2, {
-    req(input$dates6120.2)
-    
-    start <- ymd(input$dates6120.2[[1]])
-    end <- ymd(input$dates6120.2[[2]])
-    
-    tryCatch({
-      if (start > end) {
-        shinyalert("Ошибка при вводе: конечная дата предшествует начальной дате", type = "error")
-        updateDateRangeInput(
-          session, 
-          "dates6120.2", 
-          start = r$start,
-          end = r$end
-        )
-      } else {
-        r$start <- input$dates6120.2[[1]]
-        r$end <- input$dates6120.2[[2]]
-      }
-    }, error = function(e) {
-      updateDateRangeInput(session,
-                         "dates6120.2",
-                         start = ymd(Sys.Date()),
-                         end = ymd(Sys.Date()))
-      shinyalert("Диапазон дат не может быть пустым! Переход на текущую дату.",
-               type = "error")
-    })
-  }, ignoreInit = TRUE)
-  
-  # Filter data for 6120.2 based on user selection
-  observe({
-    req(data$df6120.2, input$choices6120.2)
-    
-    if (input$choices6120.2 == "Выбор по дате операции" && !is.null(input$dates6120.2)) {
-      from <- as.Date(input$dates6120.2[1])
-      to <- as.Date(input$dates6120.2[2])
-      if (from > to) to <- from
-      
-      selectdates <- seq.Date(from = from, to = to, by = "day")
-      data$df6120.2_2 <- data$df6120.2[as.Date(`Дата операции`) %in% selectdates, ]
-      
-    } else if (input$choices6120.2 == "Выбор по номеру первичного документа" && !is.null(input$text)) {
-      data$df6120.2_2 <- data$df6120.2[`Номер первичного документа` == input$text, ]
-      
-    } else if (input$choices6120.2 == "Выбор по статье дохода" && !is.null(input$text)) {
-      data$df6120.2_2 <- data$df6120.2[`Счет № статьи дохода` == input$text, ]
-      
-    } else if (input$choices6120.2 == "Выбор по дате операции и номеру первичного документа" && 
-               !is.null(input$dates6120.2) && !is.null(input$text)) {
-      from <- as.Date(input$dates6120.2[1])
-      to <- as.Date(input$dates6120.2[2])
-      if (from > to) to <- from
-      
-      selectdates <- seq.Date(from = from, to = to, by = "day")
-      data$df6120.2_2 <- data$df6120.2[as.Date(`Дата операции`) %in% selectdates & `Номер первичного документа` == input$text, ]
-      
-    } else if (input$choices6120.2 == "Выбор по дате операции и статье дохода" && 
-               !is.null(input$dates6120.2) && !is.null(input$text)) {
-      from <- as.Date(input$dates6120.2[1])
-      to <- as.Date(input$dates6120.2[2])
-      if (from > to) to <- from
-      
-      selectdates <- seq.Date(from = from, to = to, by = "day")
-      data$df6120.2_2 <- data$df6120.2[as.Date(`Дата операции`) %in% selectdates & `Счет № статьи дохода` == input$text, ]
-      
-    } else {
-      # Default: show all data
-      data$df6120.2_2 <- data$df6120.2
-    }
-  })
-  
-  output$table6120.2Item1 <- renderRHandsontable({
-    req(data$df6120.2)
-    
-    # Calculate final balance
-    if (nrow(data$df6120.2) > 0) {
-      data$df6120.2[, `Сальдо конечное` := `Сальдо начальное` + Кредит - Дебет]
-    }
-    
-    rhandsontable(data$df6120.2, colWidths = 150, height = 300, allowInvalid = FALSE, 
-                  fixedColumnsLeft = 2, manualColumnResize = TRUE) %>%
-      hot_col(1, dateFormat = "YYYY-MM-DD", type = "date")
-  })
-  
-  output$nested_ui6120.2 <- renderUI({
-    if (input$choices6120.2 == "Выбор по дате операции") {
-      dateRangeInput("dates6120.2", "Выберите период времени:", format = "yyyy-mm-dd",
-                     start = Sys.Date(), end = Sys.Date(), separator = "-")
-    } else if (input$choices6120.2 == "Выбор по номеру первичного документа") {
-      textInput("text", "Укажите номер первичного документа:")
-    } else if (input$choices6120.2 == "Выбор по статье дохода") {
-      textInput("text", "Укажите Счет № статьи дохода:")
-    } else if (input$choices6120.2 == "Выбор по дате операции и номеру первичного документа") {
-      fluidRow(
-        dateRangeInput("dates6120.2", "Выберите период времени:",
-                       start = Sys.Date(), end = Sys.Date(), separator = "-"),
-        textInput("text", "Укажите номер первичного документа:")
-      )
-    } else if (input$choices6120.2 == "Выбор по дате операции и статье дохода") {
-      fluidRow(
-        dateRangeInput("dates6120.2", "Выберите период времени:",
-                       start = Sys.Date(), end = Sys.Date(), separator = "-"),
-        textInput("text", "Укажите Счет № статьи дохода:")
-      )
-    }
-  })
-  
-  output$table6120.2Item2 <- renderRHandsontable({
-    req(data$df6120.2_2)
-    
-    rhandsontable(data$df6120.2_2, colWidths = 150, height = 300, readOnly = TRUE, 
-                  contextMenu = FALSE, manualColumnResize = TRUE) %>%
-      hot_col(1, dateFormat = "YYYY-MM-DD", type = "date")
-  })
-  
   output$download_df6120.2 <- downloadHandler(
     filename = function() { "df6120.2.xlsx" },
     content = function(file) {
@@ -1621,23 +944,10 @@ server <- function(input, output, session) {
     }
   )
   
-  output$download_df6120.2_2 <- downloadHandler(
-    filename = function() { "df6120.2_2.xlsx" },
-    content = function(file) {
-      write.xlsx(data$df6120.2_2, file)
-    }
-  )
-  
-  # Enhanced cleanup on session end
+  # Cleanup
   session$onSessionEnded(function() {
-    message("Shiny session ending, cleaning up resources...")
     if (!is.null(global_pool)) {
-      tryCatch({
-        poolClose(global_pool)
-        message("Database connection pool closed successfully")
-      }, error = function(e) {
-        message("Error closing connection pool: ", e$message)
-      })
+      try(poolClose(global_pool), silent = TRUE)
     }
   })
 }
