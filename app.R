@@ -11,7 +11,6 @@ library(RPostgres)
 library(pool)
 library(httr)
 library(jsonlite)
-library(shinyjs)
 
 # Global database connection pool with enhanced error handling and retry logic
 create_connection_pool <- function() {
@@ -403,9 +402,9 @@ save_data_to_neon <- function(data, table_name, session_id) {
   })
 }
 
-# IMPROVED: Load data function with better performance and error handling
+# IMPROVED: Load data function with better error handling and data validation
 load_data_from_neon <- function(table_name, session_id = NULL) {
-  # Use simple connection for load operations to avoid pool conflicts
+  # Use simple connection for load operations
   conn <- create_simple_connection()
   if (is.null(conn)) {
     message("No database connection available for load operation")
@@ -429,7 +428,6 @@ load_data_from_neon <- function(table_name, session_id = NULL) {
     }
     
     # Load data for specific session
-    result <- NULL
     if (table_name == "app_data_6120") {
       result <- dbGetQuery(conn, 
         "SELECT account_name, initial_balance, debit, credit, final_balance 
@@ -476,7 +474,7 @@ load_data_from_neon <- function(table_name, session_id = NULL) {
   })
 }
 
-# IMPROVED: Get available sessions with better error handling
+# Get available sessions with improved error handling - MODIFIED: Only last 3 sessions
 get_available_sessions <- function() {
   conn <- create_simple_connection()
   if (is.null(conn)) {
@@ -497,7 +495,7 @@ get_available_sessions <- function() {
        WHERE session_id IS NOT NULL
        GROUP BY session_id 
        ORDER BY last_updated DESC
-       LIMIT 10")  # Limit to last 10 sessions for performance
+       LIMIT 3")  # MODIFIED: Only get last 3 sessions
     
     if (nrow(sessions) == 0) {
       message("No sessions found in database")
@@ -511,14 +509,6 @@ get_available_sessions <- function() {
   }, finally = {
     try(dbDisconnect(conn), silent = TRUE)
   })
-}
-
-# NEW: Data validation function for loaded data
-validate_loaded_data <- function(data, expected_columns) {
-  if (is.null(data)) return(FALSE)
-  if (nrow(data) == 0) return(FALSE)
-  if (!all(expected_columns %in% names(data))) return(FALSE)
-  return(TRUE)
 }
 
 # Helper function for null coalescing
@@ -602,9 +592,8 @@ DF6120.2_2 <- data.table(
   stringsAsFactors = FALSE
 )
 
-# UI with enhanced connection status
+# UI with enhanced connection status - MODIFIED: Removed "New Session" button
 ui <- fluidPage(
-  useShinyjs(),
   tags$head(
     tags$script(HTML("
       // Enhanced connection monitoring
@@ -679,27 +668,12 @@ ui <- fluidPage(
         left: 0;
         width: 100%;
         height: 100%;
-        background: rgba(255, 255, 255, 0.9);
+        background: rgba(255, 255, 255, 0.8);
         z-index: 9999;
         display: flex;
         justify-content: center;
         align-items: center;
         flex-direction: column;
-        font-size: 18px;
-        color: #333;
-      }
-      .spinner {
-        border: 5px solid #f3f3f3;
-        border-top: 5px solid #3498db;
-        border-radius: 50%;
-        width: 50px;
-        height: 50px;
-        animation: spin 2s linear infinite;
-        margin-bottom: 20px;
-      }
-      @keyframes spin {
-        0% { transform: rotate(0deg); }
-        100% { transform: rotate(360deg); }
       }
     "))
   ),
@@ -748,10 +722,12 @@ ui <- fluidPage(
       conditionalPanel(
         condition = "output.show_loading",
         tags$div(class = "loading-overlay",
-          tags$div(class = "spinner"),
           tags$h3("Загрузка данных..."),
-          tags$p("Пожалуйста, подождите, данные загружаются из базы данных"),
-          tags$p("Это может занять несколько секунд")
+          tags$p("Пожалуйста, подождите"),
+          tags$br(),
+          tags$div(class = "spinner-border text-primary", role = "status",
+            tags$span(class = "sr-only", "Loading...")
+          )
         )
       ),
       tabItems(
@@ -772,6 +748,7 @@ ui <- fluidPage(
                 h4("Управление сессиями"),
                 selectInput("session_selector", "Выберите сессию для загрузки:", choices = NULL, width = "100%"),
                 fluidRow(
+                  # MODIFIED: Removed "New Session" button, adjusted column widths
                   column(6, actionButton("load_session_btn", "Загрузить сессию", 
                                        icon = icon("folder-open"), class = "btn-success", width = "100%")),
                   column(6, actionButton("save_session_btn", "Сохранить текущую сессию", 
@@ -1030,7 +1007,7 @@ server <- function(input, output, session) {
     data$df6120.2_1 <- copy(DF6120.2)
   })
   
-  # Update session selector with enhanced error handling
+  # Update session selector with enhanced error handling - MODIFIED: Only shows last 3 sessions
   observe({
     if (r$db_initialized) {
       tryCatch({
@@ -1080,7 +1057,12 @@ server <- function(input, output, session) {
               setnames(temp_data, 
                       c("account_name", "initial_balance", "debit", "credit", "final_balance"),
                       c("Счет (субчет)", "Сальдо начальное", "Дебет", "Кредит", "Сальдо конечное"))
-              data$df6120 <- temp_data
+              # Ensure data structure is valid
+              if (nrow(temp_data) > 0) {
+                data$df6120 <- temp_data
+              } else {
+                data$df6120 <- copy(DF6120)
+              }
             } else {
               message("Column mismatch in loaded data for table 6120")
               data$df6120 <- copy(DF6120)
@@ -1106,7 +1088,12 @@ server <- function(input, output, session) {
                         "Сальдо начальное", "Кредит", "Дебет", 
                         "Корреспонденция счетов: Счет № (дебет)", "Корреспонденция счетов: Счет № (кредит)", 
                         "Сальдо конечное"))
-              data$df6120.1 <- temp_data
+              # Ensure data structure is valid
+              if (nrow(temp_data) > 0) {
+                data$df6120.1 <- temp_data
+              } else {
+                data$df6120.1 <- copy(DF6120.1)
+              }
             } else {
               message("Column mismatch in loaded data for table 6120.1")
               data$df6120.1 <- copy(DF6120.1)
@@ -1132,7 +1119,12 @@ server <- function(input, output, session) {
                         "Сальдо начальное", "Кредит", "Дебет", 
                         "Корреспонденция счетов: Счет № (дебет)", "Корреспонденция счетов: Счет № (кредит)", 
                         "Сальдо конечное"))
-              data$df6120.2 <- temp_data
+              # Ensure data structure is valid
+              if (nrow(temp_data) > 0) {
+                data$df6120.2 <- temp_data
+              } else {
+                data$df6120.2 <- copy(DF6120.2)
+              }
             } else {
               message("Column mismatch in loaded data for table 6120.2")
               data$df6120.2 <- copy(DF6120.2)
@@ -1215,6 +1207,8 @@ server <- function(input, output, session) {
       shinyalert("Ошибка", error_msg, type = "error")
     }
   })
+  
+  # REMOVED: New session button functionality completely removed as per requirement
   
   # Display current session info
   output$current_session_info <- renderText({
