@@ -421,12 +421,12 @@ save_data_to_neon <- function(data, table_name, session_id) {
   })
 }
 
-# Get available sessions
+# Get available sessions - FIXED: Added proper error handling and auto-refresh
 get_available_sessions <- function() {
   conn <- create_simple_connection()
   if (is.null(conn)) {
     message("No database connection available for session query")
-    return(NULL)
+    return(character(0))  # Return empty character vector instead of NULL
   }
   
   tryCatch({
@@ -439,20 +439,20 @@ get_available_sessions <- function() {
          UNION ALL 
          SELECT session_id, created_at FROM app_data_6120_2
        ) AS combined 
-       WHERE session_id IS NOT NULL
+       WHERE session_id IS NOT NULL AND session_id != ''
        GROUP BY session_id 
        ORDER BY last_updated DESC
-       LIMIT 5")
+       LIMIT 10")
     
     if (nrow(sessions) == 0) {
       message("No sessions found in database")
-      return(NULL)
+      return(character(0))
     }
     
     return(sessions$session_id)
   }, error = function(e) {
     message("Error getting sessions: ", e$message)
-    return(NULL)
+    return(character(0))
   }, finally = {
     try(dbDisconnect(conn), silent = TRUE)
   })
@@ -461,7 +461,7 @@ get_available_sessions <- function() {
 # Helper function for null coalescing
 `%||%` <- function(x, y) if (!is.null(x) && !is.na(x)) x else y
 
-# Initialize data tables
+# Initialize data tables with proper date handling
 DF6120 <- data.table(
   "Счет (субчет)" = as.character(c(
     "6120.1.Доходы по дивидендам, отражаемые в составе прибыли и убытка",
@@ -475,8 +475,9 @@ DF6120 <- data.table(
   stringsAsFactors = FALSE
 )
 
+# FIXED: Use proper Date type for date columns and handle NA values correctly
 DF6120.1 <- data.table(
-  "Дата операции" = as.character(NA),
+  "Дата операции" = as.Date(NA),
   "Номер первичного документа" = as.character(NA),
   "Счет № статьи дохода" = as.character(NA),
   "Период, к которому относятся дивиденды" = as.character(NA),
@@ -487,12 +488,11 @@ DF6120.1 <- data.table(
   "Дебет" = as.numeric(NA),
   "Корреспонденция счетов: Счет № (дебет)" = as.character(NA),
   "Корреспонденция счетов: Счет № (кредит)" = as.character(NA),
-  "Сальдо конечное" = as.numeric(NA),
-  stringsAsFactors = FALSE
+  "Сальдо конечное" = as.numeric(NA)
 )
 
 DF6120.2 <- data.table(
-  "Дата операции" = as.character(NA),
+  "Дата операции" = as.Date(NA),
   "Номер первичного документа" = as.character(NA),
   "Счет № статьи дохода" = as.character(NA),
   "Период, к которому относятся дивиденды" = as.character(NA),
@@ -503,9 +503,12 @@ DF6120.2 <- data.table(
   "Дебет" = as.numeric(NA),
   "Корреспонденция счетов: Счет № (дебет)" = as.character(NA),
   "Корреспонденция счетов: Счет № (кредит)" = as.character(NA),
-  "Сальдо конечное" = as.numeric(NA),
-  stringsAsFactors = FALSE
+  "Сальдо конечное" = as.numeric(NA)
 )
+
+# Remove the empty row to start with truly empty tables
+DF6120.1 <- DF6120.1[0]
+DF6120.2 <- DF6120.2[0]
 
 # Create empty versions for filtered data
 DF6120.1_2 <- copy(DF6120.1)[0]
@@ -616,7 +619,17 @@ ui <- fluidPage(
               br(),
               div(class = "session-info",
                 h4("Управление сессиями"),
-                selectInput("session_selector", "Выберите сессию для загрузки:", choices = NULL, width = "100%"),
+                # FIXED: Added refresh button and better session selector
+                fluidRow(
+                  column(6, 
+                    selectInput("session_selector", "Выберите сессию для загрузки:", 
+                               choices = character(0), width = "100%")
+                  ),
+                  column(6,
+                    actionButton("refresh_sessions", "Обновить список", 
+                               icon = icon("refresh"), class = "btn-info", width = "100%")
+                  )
+                ),
                 fluidRow(
                   column(6, actionButton("load_session_btn", "Загрузить сессию", 
                                        icon = icon("folder-open"), class = "btn-success", width = "100%")),
@@ -681,7 +694,8 @@ server <- function(input, output, session) {
   r <- reactiveValues(
     db_initialized = FALSE,
     show_loading = FALSE,
-    is_loading_session = FALSE
+    is_loading_session = FALSE,
+    sessions_loaded = FALSE
   )
   
   data <- reactiveValues(
@@ -696,7 +710,7 @@ server <- function(input, output, session) {
   })
   outputOptions(output, "show_loading", suspendWhenHidden = FALSE)
   
-  # Initialize data
+  # Initialize data - FIXED: Use proper empty data tables
   observe({
     data$df6120 <- copy(DF6120)
     data$df6120.1 <- copy(DF6120.1)
@@ -711,23 +725,54 @@ server <- function(input, output, session) {
     if (init_success) {
       showNotification("Подключение к базе данных установлено успешно.", 
                       type = "message", duration = 5)
+      # Load sessions after successful initialization
+      update_session_selector()
     } else {
       showNotification("Внимание: База данных недоступна. Работа в автономном режиме.", 
                       type = "warning", duration = 10)
     }
   })
   
-  # Update session selector
+  # FIXED: Separate function to update session selector with better error handling
+  update_session_selector <- function() {
+    tryCatch({
+      sessions <- get_available_sessions()
+      current_choice <- input$session_selector
+      
+      if (length(sessions) > 0) {
+        updateSelectInput(session, "session_selector", choices = c("", sessions))
+        r$sessions_loaded <- TRUE
+        message("Session selector updated with ", length(sessions), " sessions")
+      } else {
+        updateSelectInput(session, "session_selector", choices = character(0))
+        message("No sessions available to load")
+      }
+      
+      # Restore previous selection if it still exists
+      if (!is.null(current_choice) && current_choice != "" && current_choice %in% sessions) {
+        updateSelectInput(session, "session_selector", selected = current_choice)
+      }
+    }, error = function(e) {
+      message("Error updating session selector: ", e$message)
+      updateSelectInput(session, "session_selector", choices = character(0))
+    })
+  }
+  
+  # Update session selector on app start and when requested
   observe({
+    if (r$db_initialized && !r$sessions_loaded) {
+      update_session_selector()
+    }
+  })
+  
+  # Refresh sessions button
+  observeEvent(input$refresh_sessions, {
     if (r$db_initialized) {
-      tryCatch({
-        sessions <- get_available_sessions()
-        if (!is.null(sessions)) {
-          updateSelectInput(session, "session_selector", choices = c("", sessions))
-        }
-      }, error = function(e) {
-        message("Error updating session selector: ", e$message)
-      })
+      showNotification("Обновление списка сессий...", type = "message")
+      update_session_selector()
+      showNotification("Список сессий обновлен", type = "message")
+    } else {
+      showNotification("База данных недоступна", type = "error")
     }
   })
   
@@ -796,6 +841,11 @@ server <- function(input, output, session) {
                       "Сальдо начальное", "Кредит", "Дебет", 
                       "Корреспонденция счетов: Счет № (дебет)", "Корреспонденция счетов: Счет № (кредит)", 
                       "Сальдо конечное"))
+            
+            # FIXED: Convert date columns properly
+            if ("Дата операции" %in% names(temp_data)) {
+              temp_data[, `Дата операции` := as.Date(`Дата операции`)]
+            }
             data$df6120.1 <- temp_data
           }
         }
@@ -813,6 +863,11 @@ server <- function(input, output, session) {
                       "Сальдо начальное", "Кредит", "Дебет", 
                       "Корреспонденция счетов: Счет № (дебет)", "Корреспонденция счетов: Счет № (кредит)", 
                       "Сальдо конечное"))
+            
+            # FIXED: Convert date columns properly
+            if ("Дата операции" %in% names(temp_data)) {
+              temp_data[, `Дата операции` := as.Date(`Дата операции`)]
+            }
             data$df6120.2 <- temp_data
           }
         }
@@ -871,14 +926,7 @@ server <- function(input, output, session) {
       shinyalert("Успех", paste("Сессия сохранена:", session_id()), type = "success")
       
       # Update session list
-      tryCatch({
-        sessions <- get_available_sessions()
-        if (!is.null(sessions)) {
-          updateSelectInput(session, "session_selector", choices = c("", sessions))
-        }
-      }, error = function(e) {
-        message("Error updating session list after save: ", e$message)
-      })
+      update_session_selector()
     } else {
       error_msg <- paste("Ошибка сохранения данных:", paste(error_messages, collapse = "; "))
       shinyalert("Ошибка", error_msg, type = "error")
@@ -889,6 +937,7 @@ server <- function(input, output, session) {
   observeEvent(input$test_connection, {
     if (initialize_database_connection()) {
       shinyalert("Успех", "Подключение к базе данных установлено успешно!", type = "success")
+      update_session_selector()
     } else {
       shinyalert("Ошибка", "Не удалось подключиться к базе данных.", type = "error")
     }
@@ -914,12 +963,32 @@ server <- function(input, output, session) {
   
   observeEvent(input$table6120.1Item1, {
     req(input$table6120.1Item1)
-    data$df6120.1 <- hot_to_r(input$table6120.1Item1)
+    temp_data <- hot_to_r(input$table6120.1Item1)
+    
+    # FIXED: Proper date handling for table 6120.1
+    if ("Дата операции" %in% names(temp_data)) {
+      # Convert date column properly, handling various input formats
+      temp_data[, `Дата операции` := as.Date(`Дата операции`, optional = TRUE)]
+      # Replace invalid dates with NA
+      temp_data[is.na(`Дата операции`), `Дата операции` := as.Date(NA)]
+    }
+    
+    data$df6120.1 <- temp_data
   })
   
   observeEvent(input$table6120.2Item1, {
     req(input$table6120.2Item1)
-    data$df6120.2 <- hot_to_r(input$table6120.2Item1)
+    temp_data <- hot_to_r(input$table6120.2Item1)
+    
+    # FIXED: Proper date handling for table 6120.2
+    if ("Дата операции" %in% names(temp_data)) {
+      # Convert date column properly, handling various input formats
+      temp_data[, `Дата операции` := as.Date(`Дата операции`, optional = TRUE)]
+      # Replace invalid dates with NA
+      temp_data[is.na(`Дата операции`), `Дата операции` := as.Date(NA)]
+    }
+    
+    data$df6120.2 <- temp_data
   })
   
   # ОСВ: 6120
@@ -963,12 +1032,13 @@ server <- function(input, output, session) {
       
       selectdates6120.1_5 <- seq.Date(from = from, to = to, by = "day")
       if (!is.null(data$df6120.1) && nrow(data$df6120.1) > 0) {
-        data$df6120.1_1 <- data$df6120.1[as.Date(`Дата операции`) %in% selectdates6120.1_5, ]
+        # FIXED: Proper date comparison with NA handling
+        data$df6120.1_1 <- data$df6120.1[!is.na(`Дата операции`) & as.Date(`Дата операции`) %in% selectdates6120.1_5, ]
       }
     } else {
       if (!is.null(data$df6120.1) && nrow(data$df6120.1) > 0) {
         selectdates6120.1_6 <- unique(as.Date(data$df6120.1$`Дата операции`))
-        data$df6120.1_1 <- data$df6120.1[`Дата операции` %in% selectdates6120.1_6, ]
+        data$df6120.1_1 <- data$df6120.1[!is.na(`Дата операции`) & `Дата операции` %in% selectdates6120.1_6, ]
       }
     }
   })
@@ -983,12 +1053,13 @@ server <- function(input, output, session) {
       
       selectdates6120.2_5 <- seq.Date(from = from, to = to, by = "day")
       if (!is.null(data$df6120.2) && nrow(data$df6120.2) > 0) {
-        data$df6120.2_1 <- data$df6120.2[as.Date(`Дата операции`) %in% selectdates6120.2_5, ]
+        # FIXED: Proper date comparison with NA handling
+        data$df6120.2_1 <- data$df6120.2[!is.na(`Дата операции`) & as.Date(`Дата операции`) %in% selectdates6120.2_5, ]
       }
     } else {
       if (!is.null(data$df6120.2) && nrow(data$df6120.2) > 0) {
         selectdates6120.2_6 <- unique(as.Date(data$df6120.2$`Дата операции`))
-        data$df6120.2_1 <- data$df6120.2[`Дата операции` %in% selectdates6120.2_6, ]
+        data$df6120.2_1 <- data$df6120.2[!is.na(`Дата операции`) & `Дата операции` %in% selectdates6120.2_6, ]
       }
     }
   })
@@ -1059,77 +1130,6 @@ server <- function(input, output, session) {
   )
   
   # 6120.1 Tab
-  observeEvent(input$dates6120.1, {
-    req(input$dates6120.1)
-    
-    start <- ymd(input$dates6120.1[[1]])
-    end <- ymd(input$dates6120.1[[2]])
-    
-    tryCatch({
-      if (start > end) {
-        shinyalert("Ошибка при вводе: конечная дата предшествует начальной дате", type = "error")
-        updateDateRangeInput(
-          session, 
-          "dates6120.1", 
-          start = r$start,
-          end = r$end
-        )
-      } else {
-        r$start <- input$dates6120.1[[1]]
-        r$end <- input$dates6120.1[[2]]
-      }
-    }, error = function(e) {
-      updateDateRangeInput(session,
-                         "dates6120.1",
-                         start = ymd(Sys.Date()),
-                         end = ymd(Sys.Date()))
-      shinyalert("Диапазон дат не может быть пустым! Переход на текущую дату.",
-               type = "error")
-    })
-  }, ignoreInit = TRUE)
-  
-  # Filter data for 6120.1 based on user selection
-  observe({
-    req(data$df6120.1, input$choices6120.1)
-    
-    if (input$choices6120.1 == "Выбор по дате операции" && !is.null(input$dates6120.1)) {
-      from <- as.Date(input$dates6120.1[1])
-      to <- as.Date(input$dates6120.1[2])
-      if (from > to) to <- from
-      
-      selectdates <- seq.Date(from = from, to = to, by = "day")
-      data$df6120.1_2 <- data$df6120.1[as.Date(`Дата операции`) %in% selectdates, ]
-      
-    } else if (input$choices6120.1 == "Выбор по номеру первичного документа" && !is.null(input$text)) {
-      data$df6120.1_2 <- data$df6120.1[`Номер первичного документа` == input$text, ]
-      
-    } else if (input$choices6120.1 == "Выбор по статье дохода" && !is.null(input$text)) {
-      data$df6120.1_2 <- data$df6120.1[`Счет № статьи дохода` == input$text, ]
-      
-    } else if (input$choices6120.1 == "Выбор по дате операции и номеру первичного документа" && 
-               !is.null(input$dates6120.1) && !is.null(input$text)) {
-      from <- as.Date(input$dates6120.1[1])
-      to <- as.Date(input$dates6120.1[2])
-      if (from > to) to <- from
-      
-      selectdates <- seq.Date(from = from, to = to, by = "day")
-      data$df6120.1_2 <- data$df6120.1[as.Date(`Дата операции`) %in% selectdates & `Номер первичного документа` == input$text, ]
-      
-    } else if (input$choices6120.1 == "Выбор по дате операции и статье дохода" && 
-               !is.null(input$dates6120.1) && !is.null(input$text)) {
-      from <- as.Date(input$dates6120.1[1])
-      to <- as.Date(input$dates6120.1[2])
-      if (from > to) to <- from
-      
-      selectdates <- seq.Date(from = from, to = to, by = "day")
-      data$df6120.1_2 <- data$df6120.1[as.Date(`Дата операции`) %in% selectdates & `Счет № статьи дохода` == input$text, ]
-      
-    } else {
-      # Default: show all data
-      data$df6120.1_2 <- data$df6120.1
-    }
-  })
-  
   output$table6120.1Item1 <- renderRHandsontable({
     req(data$df6120.1)
     
@@ -1138,40 +1138,12 @@ server <- function(input, output, session) {
       data$df6120.1[, `Сальдо конечное` := `Сальдо начальное` + Кредит - Дебет]
     }
     
-    rhandsontable(data$df6120.1, colWidths = 150, height = 300, allowInvalid = FALSE, 
-                  fixedColumnsLeft = 2, manualColumnResize = TRUE) %>%
-      hot_col(1, dateFormat = "YYYY-MM-DD", type = "date")
-  })
-  
-  output$nested_ui6120.1 <- renderUI({
-    if (input$choices6120.1 == "Выбор по дате операции") {
-      dateRangeInput("dates6120.1", "Выберите период времени:", format = "yyyy-mm-dd",
-                     start = Sys.Date(), end = Sys.Date(), separator = "-")
-    } else if (input$choices6120.1 == "Выбор по номеру первичного документа") {
-      textInput("text", "Укажите номер первичного документа:")
-    } else if (input$choices6120.1 == "Выбор по статье дохода") {
-      textInput("text", "Укажите Счет № статьи дохода:")
-    } else if (input$choices6120.1 == "Выбор по дате операции и номеру первичного документа") {
-      fluidRow(
-        dateRangeInput("dates6120.1", "Выберите период времени:",
-                       start = Sys.Date(), end = Sys.Date(), separator = "-"),
-        textInput("text", "Укажите номер первичного документа:")
-      )
-    } else if (input$choices6120.1 == "Выбор по дате операции и статье дохода") {
-      fluidRow(
-        dateRangeInput("dates6120.1", "Выберите период времени:",
-                       start = Sys.Date(), end = Sys.Date(), separator = "-"),
-        textInput("text", "Укажите Счет № статьи дохода:")
-      )
-    }
-  })
-  
-  output$table6120.1Item2 <- renderRHandsontable({
-    req(data$df6120.1_2)
+    # FIXED: Improved date handling in rhandsontable
+    hot <- rhandsontable(data$df6120.1, colWidths = 150, height = 300, allowInvalid = FALSE, 
+                  fixedColumnsLeft = 2, manualColumnResize = TRUE, stretchH = "all") %>%
+      hot_col("Дата операции", dateFormat = "YYYY-MM-DD", type = "date", allowInvalid = FALSE)
     
-    rhandsontable(data$df6120.1_2, colWidths = 150, height = 300, readOnly = TRUE, 
-                  contextMenu = FALSE, manualColumnResize = TRUE) %>%
-      hot_col(1, dateFormat = "YYYY-MM-DD", type = "date")
+    return(hot)
   })
   
   output$download_df6120.1 <- downloadHandler(
@@ -1181,85 +1153,7 @@ server <- function(input, output, session) {
     }
   )
   
-  output$download_df6120.1_2 <- downloadHandler(
-    filename = function() { "df6120.1_2.xlsx" },
-    content = function(file) {
-      write.xlsx(data$df6120.1_2, file)
-    }
-  )
-  
-  # 6120.2 Tab (similar structure to 6120.1)
-  observeEvent(input$dates6120.2, {
-    req(input$dates6120.2)
-    
-    start <- ymd(input$dates6120.2[[1]])
-    end <- ymd(input$dates6120.2[[2]])
-    
-    tryCatch({
-      if (start > end) {
-        shinyalert("Ошибка при вводе: конечная дата предшествует начальной дате", type = "error")
-        updateDateRangeInput(
-          session, 
-          "dates6120.2", 
-          start = r$start,
-          end = r$end
-        )
-      } else {
-        r$start <- input$dates6120.2[[1]]
-        r$end <- input$dates6120.2[[2]]
-      }
-    }, error = function(e) {
-      updateDateRangeInput(session,
-                         "dates6120.2",
-                         start = ymd(Sys.Date()),
-                         end = ymd(Sys.Date()))
-      shinyalert("Диапазон дат не может быть пустым! Переход на текущую дату.",
-               type = "error")
-    })
-  }, ignoreInit = TRUE)
-  
-  # Filter data for 6120.2 based on user selection
-  observe({
-    req(data$df6120.2, input$choices6120.2)
-    
-    if (input$choices6120.2 == "Выбор по дате операции" && !is.null(input$dates6120.2)) {
-      from <- as.Date(input$dates6120.2[1])
-      to <- as.Date(input$dates6120.2[2])
-      if (from > to) to <- from
-      
-      selectdates <- seq.Date(from = from, to = to, by = "day")
-      data$df6120.2_2 <- data$df6120.2[as.Date(`Дата операции`) %in% selectdates, ]
-      
-    } else if (input$choices6120.2 == "Выбор по номеру первичного документа" && !is.null(input$text)) {
-      data$df6120.2_2 <- data$df6120.2[`Номер первичного документа` == input$text, ]
-      
-    } else if (input$choices6120.2 == "Выбор по статье дохода" && !is.null(input$text)) {
-      data$df6120.2_2 <- data$df6120.2[`Счет № статьи дохода` == input$text, ]
-      
-    } else if (input$choices6120.2 == "Выбор по дате операции и номеру первичного документа" && 
-               !is.null(input$dates6120.2) && !is.null(input$text)) {
-      from <- as.Date(input$dates6120.2[1])
-      to <- as.Date(input$dates6120.2[2])
-      if (from > to) to <- from
-      
-      selectdates <- seq.Date(from = from, to = to, by = "day")
-      data$df6120.2_2 <- data$df6120.2[as.Date(`Дата операции`) %in% selectdates & `Номер первичного документа` == input$text, ]
-      
-    } else if (input$choices6120.2 == "Выбор по дате операции и статье дохода" && 
-               !is.null(input$dates6120.2) && !is.null(input$text)) {
-      from <- as.Date(input$dates6120.2[1])
-      to <- as.Date(input$dates6120.2[2])
-      if (from > to) to <- from
-      
-      selectdates <- seq.Date(from = from, to = to, by = "day")
-      data$df6120.2_2 <- data$df6120.2[as.Date(`Дата операции`) %in% selectdates & `Счет № статьи дохода` == input$text, ]
-      
-    } else {
-      # Default: show all data
-      data$df6120.2_2 <- data$df6120.2
-    }
-  })
-  
+  # 6120.2 Tab
   output$table6120.2Item1 <- renderRHandsontable({
     req(data$df6120.2)
     
@@ -1268,53 +1162,18 @@ server <- function(input, output, session) {
       data$df6120.2[, `Сальдо конечное` := `Сальдо начальное` + Кредит - Дебет]
     }
     
-    rhandsontable(data$df6120.2, colWidths = 150, height = 300, allowInvalid = FALSE, 
-                  fixedColumnsLeft = 2, manualColumnResize = TRUE) %>%
-      hot_col(1, dateFormat = "YYYY-MM-DD", type = "date")
-  })
-  
-  output$nested_ui6120.2 <- renderUI({
-    if (input$choices6120.2 == "Выбор по дате операции") {
-      dateRangeInput("dates6120.2", "Выберите период времени:", format = "yyyy-mm-dd",
-                     start = Sys.Date(), end = Sys.Date(), separator = "-")
-    } else if (input$choices6120.2 == "Выбор по номеру первичного документа") {
-      textInput("text", "Укажите номер первичного документа:")
-    } else if (input$choices6120.2 == "Выбор по статье дохода") {
-      textInput("text", "Укажите Счет № статьи дохода:")
-    } else if (input$choices6120.2 == "Выбор по дате операции и номеру первичного документа") {
-      fluidRow(
-        dateRangeInput("dates6120.2", "Выберите период времени:",
-                       start = Sys.Date(), end = Sys.Date(), separator = "-"),
-        textInput("text", "Укажите номер первичного документа:")
-      )
-    } else if (input$choices6120.2 == "Выбор по дате операции и статье дохода") {
-      fluidRow(
-        dateRangeInput("dates6120.2", "Выберите период времени:",
-                       start = Sys.Date(), end = Sys.Date(), separator = "-"),
-        textInput("text", "Укажите Счет № статьи дохода:")
-      )
-    }
-  })
-  
-  output$table6120.2Item2 <- renderRHandsontable({
-    req(data$df6120.2_2)
+    # FIXED: Improved date handling in rhandsontable
+    hot <- rhandsontable(data$df6120.2, colWidths = 150, height = 300, allowInvalid = FALSE, 
+                  fixedColumnsLeft = 2, manualColumnResize = TRUE, stretchH = "all") %>%
+      hot_col("Дата операции", dateFormat = "YYYY-MM-DD", type = "date", allowInvalid = FALSE)
     
-    rhandsontable(data$df6120.2_2, colWidths = 150, height = 300, readOnly = TRUE, 
-                  contextMenu = FALSE, manualColumnResize = TRUE) %>%
-      hot_col(1, dateFormat = "YYYY-MM-DD", type = "date")
+    return(hot)
   })
   
   output$download_df6120.2 <- downloadHandler(
     filename = function() { "df6120.2.xlsx" },
     content = function(file) {
       write.xlsx(data$df6120.2, file)
-    }
-  )
-  
-  output$download_df6120.2_2 <- downloadHandler(
-    filename = function() { "df6120.2_2.xlsx" },
-    content = function(file) {
-      write.xlsx(data$df6120.2_2, file)
     }
   )
   
