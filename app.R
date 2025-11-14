@@ -25,14 +25,12 @@ create_database_connection <- function() {
     message("Attempting to connect to database...")
     
     # Простой и надежный способ разбора URL
-    # Формат: postgresql://username:password@host:port/database
     conn_parts <- strsplit(gsub("postgresql://", "", database_url), "@")[[1]]
     if (length(conn_parts) != 2) {
       message("Invalid DATABASE_URL format")
       return(NULL)
     }
     
-    # Извлекаем пользователя и пароль
     user_pass <- strsplit(conn_parts[1], ":")[[1]]
     if (length(user_pass) != 2) {
       message("Invalid user:password format")
@@ -42,7 +40,6 @@ create_database_connection <- function() {
     username <- user_pass[1]
     password <- user_pass[2]
     
-    # Извлекаем хост, порт и базу данных
     host_db <- strsplit(conn_parts[2], "/")[[1]]
     if (length(host_db) != 2) {
       message("Invalid host/database format")
@@ -54,12 +51,10 @@ create_database_connection <- function() {
     port <- ifelse(length(host_port) > 1, as.numeric(host_port[2]), 5432)
     dbname <- host_db[2]
     
-    # Удаляем параметры запроса из имени базы данных
     dbname <- strsplit(dbname, "\\?")[[1]][1]
     
     message(paste("Connecting to:", host, "port:", port, "database:", dbname))
     
-    # Создаем подключение
     conn <- dbConnect(
       RPostgres::Postgres(),
       dbname = dbname,
@@ -70,7 +65,6 @@ create_database_connection <- function() {
       sslmode = "require"
     )
     
-    # Проверяем подключение
     test_result <- dbGetQuery(conn, "SELECT 1 as test")
     message("Database connection established successfully")
     
@@ -82,7 +76,7 @@ create_database_connection <- function() {
   })
 }
 
-# Упрощенная функция загрузки данных
+# Упрощенная функция загрузки данных - FIXED VERSION
 load_data_simple <- function(table_name, session_id) {
   message("Loading data from: ", table_name, " for session: ", session_id)
   
@@ -125,11 +119,15 @@ load_data_simple <- function(table_name, session_id) {
       return(NULL)
     }
     
-    message("Successfully loaded ", nrow(result), " rows")
+    message("Successfully loaded ", nrow(result), " rows from ", table_name)
+    message("Column names in loaded data: ", paste(names(result), collapse = ", "))
+    message("First few rows:")
+    print(head(result))
+    
     return(result)
     
   }, error = function(e) {
-    message("Error loading data: ", e$message)
+    message("Error loading data from ", table_name, ": ", e$message)
     return(NULL)
   }, finally = {
     if (!is.null(conn)) {
@@ -269,7 +267,6 @@ initialize_database_simple <- function() {
       return(FALSE)
     }
     
-    # Создаем таблицы если их нет
     tables <- list(
       app_data_6120 = "
         CREATE TABLE IF NOT EXISTS app_data_6120 (
@@ -731,12 +728,12 @@ server = function(input, output, session) {
     }
   })
   
-  # Load session
+  # Load session - FIXED VERSION
   observeEvent(input$load_session_btn, {
     req(input$session_selector, input$session_selector != "")
     
     selected_session <- input$session_selector
-    message("Loading session: ", selected_session)
+    message("Attempting to load session: ", selected_session)
     
     r$show_loading <- TRUE
     
@@ -748,19 +745,35 @@ server = function(input, output, session) {
       loaded_data_6120_1 <- load_data_simple("app_data_6120_1", selected_session)
       loaded_data_6120_2 <- load_data_simple("app_data_6120_2", selected_session)
       
-      # Update data tables
+      # Debug information
+      message("DEBUG: Loaded data summary:")
+      message(" - df6120: ", if(!is.null(loaded_data_6120)) nrow(loaded_data_6120) else "NULL")
+      message(" - df6120_1: ", if(!is.null(loaded_data_6120_1)) nrow(loaded_data_6120_1) else "NULL")
+      message(" - df6120_2: ", if(!is.null(loaded_data_6120_2)) nrow(loaded_data_6120_2) else "NULL")
+      
+      # Update data tables with proper error handling
       if (!is.null(loaded_data_6120)) {
         temp_data <- as.data.table(loaded_data_6120)
-        if (all(c("account_name", "initial_balance", "debit", "credit", "final_balance") %in% names(temp_data))) {
+        message("DEBUG: df6120 columns: ", paste(names(temp_data), collapse = ", "))
+        
+        # Check if we have the expected columns
+        expected_cols <- c("account_name", "initial_balance", "debit", "credit", "final_balance")
+        if (all(expected_cols %in% names(temp_data))) {
           setnames(temp_data, 
                   c("account_name", "initial_balance", "debit", "credit", "final_balance"),
                   c("Счет (субчет)", "Сальдо начальное", "Дебет", "Кредит", "Сальдо конечное"))
           data$df6120 <- temp_data
+          message("DEBUG: Successfully updated df6120 with ", nrow(temp_data), " rows")
+        } else {
+          message("DEBUG: Column mismatch in df6120. Expected: ", paste(expected_cols, collapse=", "), 
+                  " Found: ", paste(names(temp_data), collapse=", "))
         }
       }
       
       if (!is.null(loaded_data_6120_1)) {
         temp_data <- as.data.table(loaded_data_6120_1)
+        message("DEBUG: df6120_1 columns: ", paste(names(temp_data), collapse = ", "))
+        
         expected_cols <- c("operation_date", "document_number", "income_account", "dividend_period",
                           "operation_description", "accounting_method", "initial_balance", 
                           "credit", "debit", "correspondence_debit", "correspondence_credit", "final_balance")
@@ -773,15 +786,24 @@ server = function(input, output, session) {
                     "Корреспонденция счетов: Счет № (дебет)", "Корреспонденция счетов: Счет № (кредит)", 
                     "Сальдо конечное"))
           
+          # Handle date conversion safely
           if ("Дата операции" %in% names(temp_data)) {
-            temp_data[, `Дата операции` := as.Date(`Дата операции`)]
+            temp_data[, `Дата операции` := as.Date(`Дата операции`, optional = TRUE)]
+            # Convert any failed dates to NA
+            temp_data[is.na(as.Date(`Дата операции`, optional = TRUE)), `Дата операции` := as.Date(NA)]
           }
           data$df6120.1 <- temp_data
+          message("DEBUG: Successfully updated df6120.1 with ", nrow(temp_data), " rows")
+        } else {
+          message("DEBUG: Column mismatch in df6120_1. Expected: ", paste(expected_cols, collapse=", "), 
+                  " Found: ", paste(names(temp_data), collapse=", "))
         }
       }
       
       if (!is.null(loaded_data_6120_2)) {
         temp_data <- as.data.table(loaded_data_6120_2)
+        message("DEBUG: df6120_2 columns: ", paste(names(temp_data), collapse = ", "))
+        
         expected_cols <- c("operation_date", "document_number", "income_account", "dividend_period",
                           "operation_description", "accounting_method", "initial_balance", 
                           "credit", "debit", "correspondence_debit", "correspondence_credit", "final_balance")
@@ -794,19 +816,34 @@ server = function(input, output, session) {
                     "Корреспонденция счетов: Счет № (дебет)", "Корреспонденция счетов: Счет № (кредит)", 
                     "Сальдо конечное"))
           
+          # Handle date conversion safely
           if ("Дата операции" %in% names(temp_data)) {
-            temp_data[, `Дата операции` := as.Date(`Дата операции`)]
+            temp_data[, `Дата операции` := as.Date(`Дата операции`, optional = TRUE)]
+            # Convert any failed dates to NA
+            temp_data[is.na(as.Date(`Дата операции`, optional = TRUE)), `Дата операции` := as.Date(NA)]
           }
           data$df6120.2 <- temp_data
+          message("DEBUG: Successfully updated df6120.2 with ", nrow(temp_data), " rows")
+        } else {
+          message("DEBUG: Column mismatch in df6120_2. Expected: ", paste(expected_cols, collapse=", "), 
+                  " Found: ", paste(names(temp_data), collapse=", "))
         }
       }
       
       # Update session ID
       session_id(selected_session)
       
+      # Force UI update by triggering reactive dependencies
+      isolate({
+        data$df6120 <- data$df6120
+        data$df6120.1 <- data$df6120.1  
+        data$df6120.2 <- data$df6120.2
+      })
+      
       shinyalert("Успех", paste("Сессия загружена:", selected_session), type = "success")
       
     }, error = function(e) {
+      message("ERROR in load session: ", e$message)
       shinyalert("Ошибка", paste("Ошибка при загрузке сессии:", e$message), type = "error")
     }, finally = {
       r$show_loading <- FALSE
@@ -880,6 +917,7 @@ server = function(input, output, session) {
     paste("ID текущей сессии:", session_id())
   })
   
+  # [Rest of your server code remains the same...]
   # Date range validation and filtering logic from code2
   observeEvent(input$dates6120, {
     start <- ymd(input$dates6120[[1]])
