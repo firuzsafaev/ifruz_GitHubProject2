@@ -222,8 +222,8 @@ save_data_simple <- function(data, table_name, session_id) {
   })
 }
 
-# Функция получения только последних двух сессий
-get_recent_sessions <- function() {
+# Функция получения всех сессий (а не только последних двух)
+get_all_sessions <- function() {
   conn <- NULL
   tryCatch({
     conn <- create_database_connection()
@@ -239,8 +239,7 @@ get_recent_sessions <- function() {
         UNION SELECT session_id, MAX(created_at) as max_date FROM app_data_6120_2 GROUP BY session_id
       ) AS sessions
       WHERE session_id IS NOT NULL AND session_id != ''
-      ORDER BY max_date DESC
-      LIMIT 2"
+      ORDER BY max_date DESC"
     
     sessions <- dbGetQuery(conn, query)
     
@@ -685,27 +684,30 @@ server = function(input, output, session) {
     }
   })
   
-  # Update session selector - только последние 2 сессии
+  # Update session selector - ИСПРАВЛЕННАЯ ВЕРСИЯ
   update_session_selector <- function() {
     tryCatch({
-      sessions <- get_recent_sessions()  # Используем новую функцию для получения только последних 2 сессий
+      sessions <- get_all_sessions()  # Используем функцию для получения ВСЕХ сессий
       current_choice <- input$session_selector
       
       if (length(sessions) > 0) {
-        updateSelectInput(session, "session_selector", choices = c("", sessions))
+        # Добавляем пустую опцию и все доступные сессии
+        session_choices <- c("", sessions)
+        updateSelectInput(session, "session_selector", choices = session_choices)
         r$sessions_loaded <- TRUE
-        message("Session selector updated with ", length(sessions), " recent sessions")
+        message("Session selector updated with ", length(sessions), " sessions")
+        
+        # Сохраняем выбранную сессию если она все еще доступна
+        if (!is.null(current_choice) && current_choice != "" && current_choice %in% sessions) {
+          updateSelectInput(session, "session_selector", selected = current_choice)
+        }
       } else {
-        updateSelectInput(session, "session_selector", choices = character(0))
-        message("No recent sessions available to load")
-      }
-      
-      if (!is.null(current_choice) && current_choice != "" && current_choice %in% sessions) {
-        updateSelectInput(session, "session_selector", selected = current_choice)
+        updateSelectInput(session, "session_selector", choices = c(""))
+        message("No sessions available to load")
       }
     }, error = function(e) {
       message("Error updating session selector: ", e$message)
-      updateSelectInput(session, "session_selector", choices = character(0))
+      updateSelectInput(session, "session_selector", choices = c(""))
     })
   }
   
