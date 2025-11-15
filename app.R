@@ -12,8 +12,6 @@ library(pool)
 library(httr)
 library(jsonlite)
 
-# [Все остальные функции остаются без изменений: create_database_connection, load_data_simple, save_data_simple, get_recent_sessions, initialize_database_simple, test_database_connection]
-
 # Упрощенная функция создания подключения
 create_database_connection <- function() {
   tryCatch({
@@ -224,33 +222,48 @@ save_data_simple <- function(data, table_name, session_id) {
   })
 }
 
-# Функция получения только последних двух сессий
+# УПРОЩЕННАЯ функция получения сессий - ИСПРАВЛЕННАЯ ВЕРСИЯ
 get_recent_sessions <- function() {
   conn <- NULL
   tryCatch({
     conn <- create_database_connection()
     if (is.null(conn)) {
+      message("No database connection in get_recent_sessions")
       return(character(0))
     }
     
-    query <- "
-      SELECT DISTINCT session_id 
-      FROM (
-        SELECT session_id, MAX(created_at) as max_date FROM app_data_6120 GROUP BY session_id
-        UNION SELECT session_id, MAX(created_at) as max_date FROM app_data_6120_1 GROUP BY session_id  
-        UNION SELECT session_id, MAX(created_at) as max_date FROM app_data_6120_2 GROUP BY session_id
-      ) AS sessions
-      WHERE session_id IS NOT NULL AND session_id != ''
-      ORDER BY max_date DESC
-      LIMIT 2"
+    # ПРОСТОЙ запрос - проверяем все таблицы по отдельности
+    sessions <- character(0)
     
-    sessions <- dbGetQuery(conn, query)
-    
-    if (nrow(sessions) == 0) {
-      return(character(0))
+    # Проверяем app_data_6120
+    query1 <- "SELECT DISTINCT session_id FROM app_data_6120 WHERE session_id IS NOT NULL AND session_id != '' LIMIT 2"
+    result1 <- dbGetQuery(conn, query1)
+    if (nrow(result1) > 0) {
+      sessions <- c(sessions, result1$session_id)
     }
     
-    return(sessions$session_id)
+    # Проверяем app_data_6120_1  
+    query2 <- "SELECT DISTINCT session_id FROM app_data_6120_1 WHERE session_id IS NOT NULL AND session_id != '' LIMIT 2"
+    result2 <- dbGetQuery(conn, query2)
+    if (nrow(result2) > 0) {
+      sessions <- c(sessions, result2$session_id)
+    }
+    
+    # Проверяем app_data_6120_2
+    query3 <- "SELECT DISTINCT session_id FROM app_data_6120_2 WHERE session_id IS NOT NULL AND session_id != '' LIMIT 2"
+    result3 <- dbGetQuery(conn, query3)
+    if (nrow(result3) > 0) {
+      sessions <- c(sessions, result3$session_id)
+    }
+    
+    # Убираем дубликаты и ограничиваем 2 последними
+    sessions <- unique(sessions)
+    if (length(sessions) > 2) {
+      sessions <- sessions[1:2]  # Берем первые 2 (предполагая что они отсортированы по времени создания)
+    }
+    
+    message("Found sessions: ", paste(sessions, collapse = ", "))
+    return(sessions)
     
   }, error = function(e) {
     message("Error getting sessions: ", e$message)
@@ -354,7 +367,7 @@ test_database_connection <- function() {
 # Helper function for null coalescing
 `%||%` <- function(x, y) if (!is.null(x) && !is.na(x)) x else y
 
-# [Остальная часть кода с инициализацией данных таблиц остается без изменений]
+# [Остальная часть кода с инициализацией данных таблиц остается без изменений...]
 
 # Initialize data tables
 DF6120 <- data.table(
@@ -540,10 +553,8 @@ ui <- fluidPage(
                 h4("Управление сессиями"),
                 fluidRow(
                   column(12, 
-                    # ИСПРАВЛЕНИЕ: Добавлен label и улучшена видимость
-                    selectInput("session_selector", "Выберите сессию для загрузки:", 
-                               choices = c("Нет доступных сессий" = ""), 
-                               width = "100%")
+                    # УЛУЧШЕННЫЙ ВЫБОР СЕССИЙ
+                    uiOutput("session_selector_ui")
                   )
                 ),
                 fluidRow(
@@ -551,6 +562,13 @@ ui <- fluidPage(
                                        icon = icon("folder-open"), class = "btn-success", width = "100%")),
                   column(6, actionButton("save_session_btn", "Сохранить текущую сессию", 
                                        icon = icon("save"), class = "btn-warning", width = "100%"))
+                ),
+                # ДОБАВЛЕНА КНОПКА ДЛЯ ОТЛАДКИ
+                fluidRow(
+                  column(12, 
+                    actionButton("debug_sessions", "Отладочная информация", 
+                               icon = icon("bug"), class = "btn-info", width = "100%")
+                  )
                 )
               ),
               br(),
@@ -561,7 +579,7 @@ ui <- fluidPage(
             )
           )
         ),
-        # [Остальные вкладки остаются без изменений]
+        # [Остальные вкладки остаются без изменений...]
         tabItem(tabName = "table6120",
           fluidRow(
             column(width = 12, br(),
@@ -649,7 +667,9 @@ server = function(input, output, session) {
     show_loading = FALSE,
     sessions_loaded = FALSE,
     start = ymd(Sys.Date()),
-    end = ymd(Sys.Date())
+    end = ymd(Sys.Date()),
+    # ДОБАВЛЕН РЕАКТИВНЫЙ СПИСОК СЕССИЙ
+    session_list = character(0)
   )
   
   data <- reactiveValues(
@@ -668,6 +688,21 @@ server = function(input, output, session) {
   })
   outputOptions(output, "show_loading", suspendWhenHidden = FALSE)
   
+  # ИСПРАВЛЕННЫЙ ВЫБОР СЕССИЙ
+  output$session_selector_ui <- renderUI({
+    sessions <- r$session_list
+    
+    if (length(sessions) > 0) {
+      choices <- setNames(sessions, sessions)
+      choices <- c("Выберите сессию..." = "", choices)
+    } else {
+      choices <- c("Нет доступных сессий" = "")
+    }
+    
+    selectInput("session_selector", "Выберите сессию для загрузки:", 
+                choices = choices, width = "100%")
+  })
+  
   # Initialize data
   observe({
     data$df6120 <- copy(DF6120)
@@ -685,55 +720,52 @@ server = function(input, output, session) {
     if (init_success) {
       showNotification("База данных инициализирована успешно.", 
                       type = "message", duration = 5)
-      # ИСПРАВЛЕНИЕ: Обновляем список сессий сразу после инициализации БД
-      update_session_selector()
+      # Обновляем список сессий сразу после инициализации
+      update_session_list()
     } else {
       showNotification("Внимание: База данных недоступна. Работа в автономном режиме.", 
                       type = "warning", duration = 10)
     }
   })
   
-  # Update session selector - ИСПРАВЛЕННАЯ ВЕРСИЯ
-  update_session_selector <- function() {
+  # НОВАЯ ФУНКЦИЯ: Обновление списка сессий
+  update_session_list <- function() {
     tryCatch({
-      sessions <- get_recent_sessions()  # Используем функцию для получения последних 2 сессий
-      
-      message("DEBUG: Found sessions: ", paste(sessions, collapse = ", "))
-      
-      current_choice <- input$session_selector
-      
-      if (length(sessions) > 0) {
-        # ИСПРАВЛЕНИЕ: Создаем именованный вектор для лучшего отображения
-        session_choices <- setNames(sessions, sessions)
-        session_choices <- c("Выберите сессию..." = "", session_choices)
-        
-        updateSelectInput(session, "session_selector", 
-                         choices = session_choices,
-                         selected = ifelse(current_choice %in% sessions, current_choice, ""))
-        
-        r$sessions_loaded <- TRUE
-        message("Session selector updated with ", length(sessions), " recent sessions")
-      } else {
-        # ИСПРАВЛЕНИЕ: Более информативное сообщение когда сессий нет
-        updateSelectInput(session, "session_selector", 
-                         choices = c("Нет доступных сессий" = ""))
-        message("No recent sessions available to load")
-      }
+      sessions <- get_recent_sessions()
+      r$session_list <- sessions
+      message("Updated session list: ", paste(sessions, collapse = ", "))
     }, error = function(e) {
-      message("Error updating session selector: ", e$message)
-      updateSelectInput(session, "session_selector", 
-                       choices = c("Ошибка загрузки сессий" = ""))
+      message("Error updating session list: ", e$message)
+      r$session_list <- character(0)
     })
   }
   
-  # Update session selector on app start and when database becomes available
-  observe({
-    if (r$db_initialized && !r$sessions_loaded) {
-      update_session_selector()
-    }
+  # Отладочная информация
+  observeEvent(input$debug_sessions, {
+    message("=== DEBUG SESSION INFORMATION ===")
+    message("Current session ID: ", session_id())
+    message("Database initialized: ", r$db_initialized)
+    message("Sessions in list: ", paste(r$session_list, collapse = ", "))
+    
+    # Проверяем подключение к базе
+    conn_test <- test_database_connection()
+    message("Database connection test: ", conn_test)
+    
+    # Показываем уведомление с информацией
+    shinyalert(
+      title = "Отладочная информация",
+      text = paste(
+        "Текущая сессия:", session_id(),
+        "\nБаза инициализирована:", r$db_initialized,
+        "\nТест подключения:", conn_test,
+        "\nДоступные сессии:", paste(r$session_list, collapse = ", "),
+        sep = "\n"
+      ),
+      type = "info"
+    )
   })
   
-  # Load session - УЛУЧШЕННАЯ ВЕРСИЯ с сохранением текущего session_id
+  # Load session
   observeEvent(input$load_session_btn, {
     req(input$session_selector, input$session_selector != "")
     
@@ -892,21 +924,20 @@ server = function(input, output, session) {
     
     if (save_success) {
       shinyalert("Успех", paste("Сессия сохранена:", current_session), type = "success")
-      # ИСПРАВЛЕНИЕ: Обновляем список сессий после сохранения
-      update_session_selector()
+      # ОБНОВЛЯЕМ СПИСОК СЕССИЙ ПОСЛЕ СОХРАНЕНИЯ
+      update_session_list()
     } else {
       error_msg <- paste("Ошибка сохранения данных:", paste(error_messages, collapse = "; "))
       shinyalert("Ошибка", error_msg, type = "error")
     }
   })
   
-  # Test connection - ИСПРАВЛЕНИЕ: Добавлено обновление списка сессий
+  # Test connection - ОБНОВЛЯЕМ СПИСОК СЕССИЙ
   observeEvent(input$test_connection, {
     if (test_database_connection()) {
       shinyalert("Успех", "Подключение к базе данных установлено успешно!", type = "success")
       r$db_initialized <- TRUE
-      # Обновляем список сессий после успешного теста подключения
-      update_session_selector()
+      update_session_list()
     } else {
       shinyalert("Ошибка", "Не удалось подключиться к базе данных.", type = "error")
       r$db_initialized <- FALSE
@@ -954,7 +985,6 @@ server = function(input, output, session) {
     })
   }, ignoreInit = TRUE)
   
-  # [Остальной код сервера без изменений...]
   # Date filtering for 6120.1 data
   observe({
     if (!is.null(data$df6120.1) && nrow(data$df6120.1) > 0) {
