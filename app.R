@@ -236,30 +236,30 @@ get_recent_sessions <- function() {
     sessions <- character(0)
     
     # Проверяем app_data_6120
-    query1 <- "SELECT DISTINCT session_id FROM app_data_6120 WHERE session_id IS NOT NULL AND session_id != '' LIMIT 2"
+    query1 <- "SELECT DISTINCT session_id FROM app_data_6120 WHERE session_id IS NOT NULL AND session_id != '' ORDER BY created_at DESC LIMIT 2"
     result1 <- dbGetQuery(conn, query1)
     if (nrow(result1) > 0) {
       sessions <- c(sessions, result1$session_id)
     }
     
     # Проверяем app_data_6120_1  
-    query2 <- "SELECT DISTINCT session_id FROM app_data_6120_1 WHERE session_id IS NOT NULL AND session_id != '' LIMIT 2"
+    query2 <- "SELECT DISTINCT session_id FROM app_data_6120_1 WHERE session_id IS NOT NULL AND session_id != '' ORDER BY created_at DESC LIMIT 2"
     result2 <- dbGetQuery(conn, query2)
     if (nrow(result2) > 0) {
       sessions <- c(sessions, result2$session_id)
     }
     
     # Проверяем app_data_6120_2
-    query3 <- "SELECT DISTINCT session_id FROM app_data_6120_2 WHERE session_id IS NOT NULL AND session_id != '' LIMIT 2"
+    query3 <- "SELECT DISTINCT session_id FROM app_data_6120_2 WHERE session_id IS NOT NULL AND session_id != '' ORDER BY created_at DESC LIMIT 2"
     result3 <- dbGetQuery(conn, query3)
     if (nrow(result3) > 0) {
       sessions <- c(sessions, result3$session_id)
     }
     
-    # Убираем дубликаты и ограничиваем 2 последними
+    # Убираем дубликаты и ограничиваем 10 последними
     sessions <- unique(sessions)
-    if (length(sessions) > 2) {
-      sessions <- sessions[1:2]  # Берем первые 2 (предполагая что они отсортированы по времени создания)
+    if (length(sessions) > 10) {
+      sessions <- sessions[1:10]
     }
     
     message("Found sessions: ", paste(sessions, collapse = ", "))
@@ -366,8 +366,6 @@ test_database_connection <- function() {
 
 # Helper function for null coalescing
 `%||%` <- function(x, y) if (!is.null(x) && !is.na(x)) x else y
-
-# [Остальная часть кода с инициализацией данных таблиц остается без изменений...]
 
 # Initialize data tables
 DF6120 <- data.table(
@@ -561,7 +559,10 @@ ui <- fluidPage(
                   column(6, actionButton("load_session_btn", "Загрузить сессию", 
                                        icon = icon("folder-open"), class = "btn-success", width = "100%")),
                   column(6, actionButton("save_session_btn", "Сохранить текущую сессию", 
-                                       icon = icon("save"), class = "btn-warning", width = "100%"))
+                                       icon = icon("save"), class = "btn-warning", width = "100%")),
+                  column(12, actionButton("refresh_sessions_btn", "Обновить список сессий", 
+                                       icon = icon("refresh"), class = "btn-info", width = "100%",
+                                       style = "margin-top: 10px;"))
                 ),
                 # ДОБАВЛЕНА КНОПКА ДЛЯ ОТЛАДКИ
                 fluidRow(
@@ -579,7 +580,6 @@ ui <- fluidPage(
             )
           )
         ),
-        # [Остальные вкладки остаются без изменений...]
         tabItem(tabName = "table6120",
           fluidRow(
             column(width = 12, br(),
@@ -739,6 +739,12 @@ server = function(input, output, session) {
       r$session_list <- character(0)
     })
   }
+  
+  # ОБРАБОТЧИК ДЛЯ КНОПКИ ОБНОВЛЕНИЯ СЕССИЙ
+  observeEvent(input$refresh_sessions_btn, {
+    update_session_list()
+    showNotification("Список сессий обновлен", type = "message")
+  })
   
   # Отладочная информация
   observeEvent(input$debug_sessions, {
@@ -924,7 +930,7 @@ server = function(input, output, session) {
     
     if (save_success) {
       shinyalert("Успех", paste("Сессия сохранена:", current_session), type = "success")
-      # ОБНОВЛЯЕМ СПИСОК СЕССИЙ ПОСЛЕ СОХРАНЕНИЯ
+      # ВАЖНОЕ ИСПРАВЛЕНИЕ: ОБНОВЛЯЕМ СПИСОК СЕССИЙ ПОСЛЕ СОХРАНЕНИЯ
       update_session_list()
     } else {
       error_msg <- paste("Ошибка сохранения данных:", paste(error_messages, collapse = "; "))
