@@ -249,7 +249,7 @@ get_recent_sessions <- function() {
       ) AS all_sessions
       GROUP BY session_id
       ORDER BY last_activity DESC
-      LIMIT 10
+      LIMIT 2
     "
     
     result <- dbGetQuery(conn, query)
