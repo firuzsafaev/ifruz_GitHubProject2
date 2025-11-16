@@ -222,7 +222,7 @@ save_data_simple <- function(data, table_name, session_id) {
   })
 }
 
-# УПРОЩЕННАЯ функция получения сессий - ИСПРАВЛЕННАЯ ВЕРСИЯ
+# УЛУЧШЕННАЯ функция получения сессий - ИСПРАВЛЕННАЯ ВЕРСИЯ
 get_recent_sessions <- function() {
   conn <- NULL
   tryCatch({
@@ -232,35 +232,23 @@ get_recent_sessions <- function() {
       return(character(0))
     }
     
-    # ПРОСТОЙ запрос - проверяем все таблицы по отдельности
-    sessions <- character(0)
+    # УЛУЧШЕННЫЙ запрос - объединяем все сессии из всех таблиц
+    query <- "
+      SELECT DISTINCT session_id 
+      FROM (
+        SELECT session_id, created_at FROM app_data_6120 
+        UNION ALL
+        SELECT session_id, created_at FROM app_data_6120_1 
+        UNION ALL  
+        SELECT session_id, created_at FROM app_data_6120_2
+      ) AS all_sessions
+      WHERE session_id IS NOT NULL AND session_id != ''
+      ORDER BY created_at DESC
+      LIMIT 10
+    "
     
-    # Проверяем app_data_6120
-    query1 <- "SELECT DISTINCT session_id FROM app_data_6120 WHERE session_id IS NOT NULL AND session_id != '' ORDER BY created_at DESC LIMIT 2"
-    result1 <- dbGetQuery(conn, query1)
-    if (nrow(result1) > 0) {
-      sessions <- c(sessions, result1$session_id)
-    }
-    
-    # Проверяем app_data_6120_1  
-    query2 <- "SELECT DISTINCT session_id FROM app_data_6120_1 WHERE session_id IS NOT NULL AND session_id != '' ORDER BY created_at DESC LIMIT 2"
-    result2 <- dbGetQuery(conn, query2)
-    if (nrow(result2) > 0) {
-      sessions <- c(sessions, result2$session_id)
-    }
-    
-    # Проверяем app_data_6120_2
-    query3 <- "SELECT DISTINCT session_id FROM app_data_6120_2 WHERE session_id IS NOT NULL AND session_id != '' ORDER BY created_at DESC LIMIT 2"
-    result3 <- dbGetQuery(conn, query3)
-    if (nrow(result3) > 0) {
-      sessions <- c(sessions, result3$session_id)
-    }
-    
-    # Убираем дубликаты и ограничиваем 10 последними
-    sessions <- unique(sessions)
-    if (length(sessions) > 10) {
-      sessions <- sessions[1:10]
-    }
+    result <- dbGetQuery(conn, query)
+    sessions <- result$session_id
     
     message("Found sessions: ", paste(sessions, collapse = ", "))
     return(sessions)
@@ -491,6 +479,9 @@ ui <- fluidPage(
         align-items: center;
         flex-direction: column;
       }
+      .session-selector-container {
+        margin-bottom: 15px;
+      }
     "))
   ),
   
@@ -552,7 +543,9 @@ ui <- fluidPage(
                 fluidRow(
                   column(12, 
                     # УЛУЧШЕННЫЙ ВЫБОР СЕССИЙ
-                    uiOutput("session_selector_ui")
+                    div(class = "session-selector-container",
+                      uiOutput("session_selector_ui")
+                    )
                   )
                 ),
                 fluidRow(
@@ -568,7 +561,8 @@ ui <- fluidPage(
                 fluidRow(
                   column(12, 
                     actionButton("debug_sessions", "Отладочная информация", 
-                               icon = icon("bug"), class = "btn-info", width = "100%")
+                               icon = icon("bug"), class = "btn-info", width = "100%",
+                               style = "margin-top: 10px;")
                   )
                 )
               ),
@@ -669,7 +663,8 @@ server = function(input, output, session) {
     start = ymd(Sys.Date()),
     end = ymd(Sys.Date()),
     # ДОБАВЛЕН РЕАКТИВНЫЙ СПИСОК СЕССИЙ
-    session_list = character(0)
+    session_list = character(0),
+    session_update_counter = 0  # Счетчик для принудительного обновления
   )
   
   data <- reactiveValues(
@@ -688,19 +683,28 @@ server = function(input, output, session) {
   })
   outputOptions(output, "show_loading", suspendWhenHidden = FALSE)
   
-  # ИСПРАВЛЕННЫЙ ВЫБОР СЕССИЙ
+  # ИСПРАВЛЕННЫЙ ВЫБОР СЕССИЙ - с принудительным обновлением
   output$session_selector_ui <- renderUI({
+    # Зависимость от счетчика обновлений
+    r$session_update_counter
+    
     sessions <- r$session_list
     
     if (length(sessions) > 0) {
       choices <- setNames(sessions, sessions)
       choices <- c("Выберите сессию..." = "", choices)
+      selected <- if (!is.null(input$session_selector) && input$session_selector %in% sessions) {
+        input$session_selector
+      } else {
+        ""
+      }
     } else {
       choices <- c("Нет доступных сессий" = "")
+      selected <- ""
     }
     
     selectInput("session_selector", "Выберите сессию для загрузки:", 
-                choices = choices, width = "100%")
+                choices = choices, selected = selected, width = "100%")
   })
   
   # Initialize data
@@ -712,7 +716,7 @@ server = function(input, output, session) {
     data$df6120.2_2 <- copy(DF6120.2_2)
   })
   
-  # Database initialization
+  # Database initialization - СРАЗУ ОБНОВЛЯЕМ СПИСОК СЕССИЙ
   observe({
     init_success <- initialize_database_simple()
     r$db_initialized <- init_success
@@ -728,20 +732,25 @@ server = function(input, output, session) {
     }
   })
   
-  # НОВАЯ ФУНКЦИЯ: Обновление списка сессий
+  # НОВАЯ ФУНКЦИЯ: Обновление списка сессий с принудительным обновлением UI
   update_session_list <- function() {
     tryCatch({
       sessions <- get_recent_sessions()
       r$session_list <- sessions
+      # УВЕЛИЧИВАЕМ СЧЕТЧИК ДЛЯ ПРИНУДИТЕЛЬНОГО ОБНОВЛЕНИЯ UI
+      r$session_update_counter <- r$session_update_counter + 1
       message("Updated session list: ", paste(sessions, collapse = ", "))
+      message("Session update counter: ", r$session_update_counter)
     }, error = function(e) {
       message("Error updating session list: ", e$message)
       r$session_list <- character(0)
+      r$session_update_counter <- r$session_update_counter + 1
     })
   }
   
   # ОБРАБОТЧИК ДЛЯ КНОПКИ ОБНОВЛЕНИЯ СЕССИЙ
   observeEvent(input$refresh_sessions_btn, {
+    showNotification("Обновление списка сессий...", type = "message")
     update_session_list()
     showNotification("Список сессий обновлен", type = "message")
   })
@@ -752,6 +761,8 @@ server = function(input, output, session) {
     message("Current session ID: ", session_id())
     message("Database initialized: ", r$db_initialized)
     message("Sessions in list: ", paste(r$session_list, collapse = ", "))
+    message("Session update counter: ", r$session_update_counter)
+    message("Input session_selector: ", input$session_selector)
     
     # Проверяем подключение к базе
     conn_test <- test_database_connection()
@@ -765,6 +776,7 @@ server = function(input, output, session) {
         "\nБаза инициализирована:", r$db_initialized,
         "\nТест подключения:", conn_test,
         "\nДоступные сессии:", paste(r$session_list, collapse = ", "),
+        "\nСчетчик обновлений:", r$session_update_counter,
         sep = "\n"
       ),
       type = "info"
