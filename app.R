@@ -542,7 +542,6 @@ ui <- fluidPage(
                 h4("Управление сессиями"),
                 fluidRow(
                   column(12, 
-                    # УЛУЧШЕННЫЙ ВЫБОР СЕССИЙ
                     div(class = "session-selector-container",
                       uiOutput("session_selector_ui")
                     )
@@ -557,7 +556,6 @@ ui <- fluidPage(
                                        icon = icon("refresh"), class = "btn-info", width = "100%",
                                        style = "margin-top: 10px;"))
                 ),
-                # ДОБАВЛЕНА КНОПКА ДЛЯ ОТЛАДКИ
                 fluidRow(
                   column(12, 
                     actionButton("debug_sessions", "Отладочная информация", 
@@ -658,13 +656,12 @@ server = function(input, output, session) {
   # Initialize reactive values
   r <- reactiveValues(
     db_initialized = FALSE,
+    db_initialization_attempted = FALSE,  # Флаг попытки инициализации
     show_loading = FALSE,
-    sessions_loaded = FALSE,
     start = ymd(Sys.Date()),
     end = ymd(Sys.Date()),
-    # ДОБАВЛЕН РЕАКТИВНЫЙ СПИСОК СЕССИЙ
     session_list = character(0),
-    session_update_counter = 0  # Счетчик для принудительного обновления
+    session_update_counter = 0
   )
   
   data <- reactiveValues(
@@ -683,7 +680,7 @@ server = function(input, output, session) {
   })
   outputOptions(output, "show_loading", suspendWhenHidden = FALSE)
   
-  # ИСПРАВЛЕННЫЙ ВЫБОР СЕССИЙ - с принудительным обновлением
+  # ИСПРАВЛЕННЫЙ ВЫБОР СЕССИЙ
   output$session_selector_ui <- renderUI({
     # Зависимость от счетчика обновлений
     r$session_update_counter
@@ -716,31 +713,35 @@ server = function(input, output, session) {
     data$df6120.2_2 <- copy(DF6120.2_2)
   })
   
-  # Database initialization - СРАЗУ ОБНОВЛЯЕМ СПИСОК СЕССИЙ
+  # ИСПРАВЛЕННАЯ инициализация базы данных - выполняется только один раз
   observe({
-    init_success <- initialize_database_simple()
-    r$db_initialized <- init_success
-    
-    if (init_success) {
-      showNotification("База данных инициализирована успешно.", 
-                      type = "message", duration = 5)
-      # Обновляем список сессий сразу после инициализации
-      update_session_list()
-    } else {
-      showNotification("Внимание: База данных недоступна. Работа в автономном режиме.", 
-                      type = "warning", duration = 10)
+    # Проверяем, что инициализация еще не выполнялась
+    if (!r$db_initialization_attempted) {
+      r$db_initialization_attempted <- TRUE
+      
+      init_success <- initialize_database_simple()
+      r$db_initialized <- init_success
+      
+      if (init_success) {
+        showNotification("База данных инициализирована успешно.", 
+                        type = "message", duration = 5)
+        # Обновляем список сессий сразу после инициализации
+        update_session_list()
+      } else {
+        showNotification("Внимание: База данных недоступна. Работа в автономном режиме.", 
+                        type = "warning", duration = 10)
+      }
     }
   })
   
-  # НОВАЯ ФУНКЦИЯ: Обновление списка сессий с принудительным обновлением UI
+  # Функция обновления списка сессий
   update_session_list <- function() {
     tryCatch({
       sessions <- get_recent_sessions()
       r$session_list <- sessions
-      # УВЕЛИЧИВАЕМ СЧЕТЧИК ДЛЯ ПРИНУДИТЕЛЬНОГО ОБНОВЛЕНИЯ UI
+      # Увеличиваем счетчик для принудительного обновления UI
       r$session_update_counter <- r$session_update_counter + 1
       message("Updated session list: ", paste(sessions, collapse = ", "))
-      message("Session update counter: ", r$session_update_counter)
     }, error = function(e) {
       message("Error updating session list: ", e$message)
       r$session_list <- character(0)
@@ -750,9 +751,8 @@ server = function(input, output, session) {
   
   # ОБРАБОТЧИК ДЛЯ КНОПКИ ОБНОВЛЕНИЯ СЕССИЙ
   observeEvent(input$refresh_sessions_btn, {
-    showNotification("Обновление списка сессий...", type = "message")
+    showNotification("Обновление списка сессий...", type = "message", duration = 2)
     update_session_list()
-    showNotification("Список сессий обновлен", type = "message")
   })
   
   # Отладочная информация
@@ -760,9 +760,9 @@ server = function(input, output, session) {
     message("=== DEBUG SESSION INFORMATION ===")
     message("Current session ID: ", session_id())
     message("Database initialized: ", r$db_initialized)
+    message("Database initialization attempted: ", r$db_initialization_attempted)
     message("Sessions in list: ", paste(r$session_list, collapse = ", "))
     message("Session update counter: ", r$session_update_counter)
-    message("Input session_selector: ", input$session_selector)
     
     # Проверяем подключение к базе
     conn_test <- test_database_connection()
@@ -774,6 +774,7 @@ server = function(input, output, session) {
       text = paste(
         "Текущая сессия:", session_id(),
         "\nБаза инициализирована:", r$db_initialized,
+        "\nПопытка инициализации:", r$db_initialization_attempted,
         "\nТест подключения:", conn_test,
         "\nДоступные сессии:", paste(r$session_list, collapse = ", "),
         "\nСчетчик обновлений:", r$session_update_counter,
@@ -793,42 +794,27 @@ server = function(input, output, session) {
     r$show_loading <- TRUE
     
     tryCatch({
-      showNotification(paste("Загрузка сессии:", selected_session), type = "message")
+      showNotification(paste("Загрузка сессии:", selected_session), type = "message", duration = 3)
       
       # Load data from all tables
       loaded_data_6120 <- load_data_simple("app_data_6120", selected_session)
       loaded_data_6120_1 <- load_data_simple("app_data_6120_1", selected_session)
       loaded_data_6120_2 <- load_data_simple("app_data_6120_2", selected_session)
       
-      # Debug information
-      message("DEBUG: Loaded data summary:")
-      message(" - df6120: ", if(!is.null(loaded_data_6120)) nrow(loaded_data_6120) else "NULL")
-      message(" - df6120_1: ", if(!is.null(loaded_data_6120_1)) nrow(loaded_data_6120_1) else "NULL")
-      message(" - df6120_2: ", if(!is.null(loaded_data_6120_2)) nrow(loaded_data_6120_2) else "NULL")
-      
       # Update data tables with proper error handling
       if (!is.null(loaded_data_6120)) {
         temp_data <- as.data.table(loaded_data_6120)
-        message("DEBUG: df6120 columns: ", paste(names(temp_data), collapse = ", "))
-        
-        # Check if we have the expected columns
         expected_cols <- c("account_name", "initial_balance", "debit", "credit", "final_balance")
         if (all(expected_cols %in% names(temp_data))) {
           setnames(temp_data, 
                   c("account_name", "initial_balance", "debit", "credit", "final_balance"),
                   c("Счет (субчет)", "Сальдо начальное", "Дебет", "Кредит", "Сальдо конечное"))
           data$df6120 <- temp_data
-          message("DEBUG: Successfully updated df6120 with ", nrow(temp_data), " rows")
-        } else {
-          message("DEBUG: Column mismatch in df6120. Expected: ", paste(expected_cols, collapse=", "), 
-                  " Found: ", paste(names(temp_data), collapse=", "))
         }
       }
       
       if (!is.null(loaded_data_6120_1)) {
         temp_data <- as.data.table(loaded_data_6120_1)
-        message("DEBUG: df6120_1 columns: ", paste(names(temp_data), collapse = ", "))
-        
         expected_cols <- c("operation_date", "document_number", "income_account", "dividend_period",
                           "operation_description", "accounting_method", "initial_balance", 
                           "credit", "debit", "correspondence_debit", "correspondence_credit", "final_balance")
@@ -841,24 +827,16 @@ server = function(input, output, session) {
                     "Корреспонденция счетов: Счет № (дебет)", "Корреспонденция счетов: Счет № (кредит)", 
                     "Сальдо конечное"))
           
-          # Улучшенная обработка дат - сохраняем как строки для корректного отображения
           if ("Дата операции" %in% names(temp_data)) {
             temp_data[, `Дата операции` := as.character(`Дата операции`)]
           }
           
           data$df6120.1 <- temp_data
-          message("DEBUG: Successfully updated df6120.1 with ", nrow(temp_data), " rows")
-          message("DEBUG: Sample dates in df6120.1: ", paste(head(temp_data$`Дата операции`), collapse = ", "))
-        } else {
-          message("DEBUG: Column mismatch in df6120_1. Expected: ", paste(expected_cols, collapse=", "), 
-                  " Found: ", paste(names(temp_data), collapse=", "))
         }
       }
       
       if (!is.null(loaded_data_6120_2)) {
         temp_data <- as.data.table(loaded_data_6120_2)
-        message("DEBUG: df6120_2 columns: ", paste(names(temp_data), collapse = ", "))
-        
         expected_cols <- c("operation_date", "document_number", "income_account", "dividend_period",
                           "operation_description", "accounting_method", "initial_balance", 
                           "credit", "debit", "correspondence_debit", "correspondence_credit", "final_balance")
@@ -871,29 +849,13 @@ server = function(input, output, session) {
                     "Корреспонденция счетов: Счет № (дебет)", "Корреспонденция счетов: Счет № (кредит)", 
                     "Сальдо конечное"))
           
-          # Улучшенная обработка дат - сохраняем как строки для корректного отображения
           if ("Дата операции" %in% names(temp_data)) {
             temp_data[, `Дата операции` := as.character(`Дата операции`)]
           }
           
           data$df6120.2 <- temp_data
-          message("DEBUG: Successfully updated df6120.2 with ", nrow(temp_data), " rows")
-          message("DEBUG: Sample dates in df6120.2: ", paste(head(temp_data$`Дата операции`), collapse = ", "))
-        } else {
-          message("DEBUG: Column mismatch in df6120_2. Expected: ", paste(expected_cols, collapse=", "), 
-                  " Found: ", paste(names(temp_data), collapse=", "))
         }
       }
-      
-      # НЕ меняем session_id - сохраняем текущий ID сессии
-      message("Current session ID remains: ", session_id())
-      
-      # Force UI update by triggering reactive dependencies
-      isolate({
-        data$df6120 <- data$df6120
-        data$df6120.1 <- data$df6120.1  
-        data$df6120.2 <- data$df6120.2
-      })
       
       shinyalert("Успех", paste("Данные сессии загружены в текущую сессию:", session_id()), type = "success")
       
@@ -905,7 +867,7 @@ server = function(input, output, session) {
     })
   })
   
-  # Save session - сохраняем под текущим session_id
+  # Save session
   observeEvent(input$save_session_btn, {
     if (!r$db_initialized) {
       shinyalert("Ошибка", "База данных недоступна. Невозможно сохранить сессию.", type = "error")
@@ -942,7 +904,6 @@ server = function(input, output, session) {
     
     if (save_success) {
       shinyalert("Успех", paste("Сессия сохранена:", current_session), type = "success")
-      # ВАЖНОЕ ИСПРАВЛЕНИЕ: ОБНОВЛЯЕМ СПИСОК СЕССИЙ ПОСЛЕ СОХРАНЕНИЯ
       update_session_list()
     } else {
       error_msg <- paste("Ошибка сохранения данных:", paste(error_messages, collapse = "; "))
@@ -950,7 +911,7 @@ server = function(input, output, session) {
     }
   })
   
-  # Test connection - ОБНОВЛЯЕМ СПИСОК СЕССИЙ
+  # Test connection
   observeEvent(input$test_connection, {
     if (test_database_connection()) {
       shinyalert("Успех", "Подключение к базе данных установлено успешно!", type = "success")
@@ -974,7 +935,7 @@ server = function(input, output, session) {
     paste("ID текущей сессии:", session_id())
   })
   
-  # [Остальной код сервера остается без изменений...]
+  # Остальной код без изменений...
   # Date range validation and filtering logic from code2
   observeEvent(input$dates6120, {
     start <- ymd(input$dates6120[[1]])
@@ -1092,9 +1053,7 @@ server = function(input, output, session) {
     req(input$table6120.1Item1)
     temp_data <- hot_to_r(input$table6120.1Item1)
     
-    # Улучшенная обработка дат при редактировании
     if ("Дата операции" %in% names(temp_data)) {
-      # Сохраняем даты как строки для единообразия
       temp_data[, `Дата операции` := as.character(`Дата операции`)]
     }
     
@@ -1105,9 +1064,7 @@ server = function(input, output, session) {
     req(input$table6120.2Item1)
     temp_data <- hot_to_r(input$table6120.2Item1)
     
-    # Улучшенная обработка дат при редактировании
     if ("Дата операции" %in% names(temp_data)) {
-      # Сохраняем даты как строки для единообразия
       temp_data[, `Дата операции` := as.character(`Дата операции`)]
     }
     
