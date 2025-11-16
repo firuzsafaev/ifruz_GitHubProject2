@@ -76,7 +76,7 @@ create_database_connection <- function() {
   })
 }
 
-# Улучшенная функция загрузки данных с обработкой дат
+# УЛУЧШЕННАЯ функция загрузки данных с лучшей обработкой ошибок
 load_data_simple <- function(table_name, session_id) {
   message("Loading data from: ", table_name, " for session: ", session_id)
   
@@ -112,20 +112,25 @@ load_data_simple <- function(table_name, session_id) {
       stop("Unknown table: ", table_name)
     }
     
+    message("Executing query: ", query)
     result <- dbGetQuery(conn, query, params = list(session_id))
     
     if (nrow(result) == 0) {
-      message("No data found for session ", session_id)
+      message("No data found for session ", session_id, " in table ", table_name)
       return(NULL)
     }
     
-    # Улучшенная обработка дат - сохраняем как строки для корректного отображения
+    # Улучшенная обработка дат - преобразуем в правильный формат
     if ("operation_date" %in% names(result)) {
       result$operation_date <- as.character(result$operation_date)
+      message("Converted operation_date to character. Sample: ", 
+              paste(head(result$operation_date), collapse = ", "))
     }
     
     message("Successfully loaded ", nrow(result), " rows from ", table_name)
     message("Column names in loaded data: ", paste(names(result), collapse = ", "))
+    message("First few rows:")
+    print(head(result))
     
     return(result)
     
@@ -244,7 +249,7 @@ get_recent_sessions <- function() {
       ) AS all_sessions
       GROUP BY session_id
       ORDER BY last_activity DESC
-      LIMIT 2
+      LIMIT 10
     "
     
     result <- dbGetQuery(conn, query)
@@ -767,7 +772,7 @@ server = function(input, output, session) {
     )
   })
   
-  # Load session
+  # Load session - УЛУЧШЕННАЯ ВЕРСИЯ С ЛУЧШЕЙ ОБРАБОТКОЙ ДАННЫХ
   observeEvent(input$load_session_btn, {
     req(input$session_selector, input$session_selector != "")
     
@@ -806,7 +811,12 @@ server = function(input, output, session) {
         } else {
           message("DEBUG: Column mismatch in df6120. Expected: ", paste(expected_cols, collapse=", "), 
                   " Found: ", paste(names(temp_data), collapse=", "))
+          showNotification("Ошибка: несоответствие столбцов в таблице 6120", type = "error")
         }
+      } else {
+        message("DEBUG: No data loaded for df6120")
+        # Reset to default if no data
+        data$df6120 <- copy(DF6120)
       }
       
       if (!is.null(loaded_data_6120_1)) {
@@ -836,7 +846,12 @@ server = function(input, output, session) {
         } else {
           message("DEBUG: Column mismatch in df6120_1. Expected: ", paste(expected_cols, collapse=", "), 
                   " Found: ", paste(names(temp_data), collapse=", "))
+          showNotification("Ошибка: несоответствие столбцов в таблице 6120.1", type = "error")
         }
+      } else {
+        message("DEBUG: No data loaded for df6120.1")
+        # Reset to default if no data
+        data$df6120.1 <- copy(DF6120.1)
       }
       
       if (!is.null(loaded_data_6120_2)) {
@@ -866,18 +881,21 @@ server = function(input, output, session) {
         } else {
           message("DEBUG: Column mismatch in df6120_2. Expected: ", paste(expected_cols, collapse=", "), 
                   " Found: ", paste(names(temp_data), collapse=", "))
+          showNotification("Ошибка: несоответствие столбцов в таблице 6120.2", type = "error")
         }
+      } else {
+        message("DEBUG: No data loaded for df6120.2")
+        # Reset to default if no data
+        data$df6120.2 <- copy(DF6120.2)
       }
       
       # НЕ меняем session_id - сохраняем текущий ID сессии
       message("Current session ID remains: ", session_id())
       
       # Force UI update by triggering reactive dependencies
-      isolate({
-        data$df6120 <- data$df6120
-        data$df6120.1 <- data$df6120.1  
-        data$df6120.2 <- data$df6120.2
-      })
+      data$df6120 <- data$df6120
+      data$df6120.1 <- data$df6120.1  
+      data$df6120.2 <- data$df6120.2
       
       shinyalert("Успех", paste("Данные сессии загружены в текущую сессию:", session_id()), type = "success")
       
