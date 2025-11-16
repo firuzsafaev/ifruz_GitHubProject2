@@ -540,10 +540,7 @@ ui <- fluidPage(
                 fluidRow(
                   column(12, 
                     # УЛУЧШЕННЫЙ ВЫБОР СЕССИЙ С АВТООБНОВЛЕНИЕМ
-                    uiOutput("session_selector_ui"),
-                    # ДОБАВЛЕНА КНОПКА ОБНОВЛЕНИЯ СПИСКА
-                    actionButton("refresh_sessions", "Обновить список сессий", 
-                               icon = icon("refresh"), class = "btn-info btn-sm")
+                    uiOutput("session_selector_ui")
                   )
                 ),
                 fluidRow(
@@ -659,7 +656,9 @@ server = function(input, output, session) {
     # ДОБАВЛЕН РЕАКТИВНЫЙ СПИСОК СЕССИЙ
     session_list = character(0),
     # ДОБАВЛЕН ФЛАГ ОБНОВЛЕНИЯ СЕССИЙ
-    sessions_updated = 0
+    sessions_updated = 0,
+    # ФЛАГ ДЛЯ ПРЕДОТВРАЩЕНИЯ ПОВТОРНОЙ ИНИЦИАЛИЗАЦИИ
+    db_init_notified = FALSE
   )
   
   data <- reactiveValues(
@@ -692,11 +691,8 @@ server = function(input, output, session) {
       choices <- c("Нет доступных сессий" = "")
     }
     
-    tagList(
-      selectInput("session_selector", "Выберите сессию для загрузки:", 
-                  choices = choices, width = "100%"),
-      helpText("Последние 2 сессии из базы данных")
-    )
+    selectInput("session_selector", "Выберите сессию для загрузки:", 
+                choices = choices, width = "100%")
   })
   
   # Initialize data
@@ -708,19 +704,24 @@ server = function(input, output, session) {
     data$df6120.2_2 <- copy(DF6120.2_2)
   })
   
-  # Database initialization
+  # Database initialization - ИСПРАВЛЕННАЯ ВЕРСИЯ
   observe({
-    init_success <- initialize_database_simple()
-    r$db_initialized <- init_success
-    
-    if (init_success) {
-      showNotification("База данных инициализирована успешно.", 
-                      type = "message", duration = 5)
-      # Обновляем список сессий сразу после инициализации
-      update_session_list()
-    } else {
-      showNotification("Внимание: База данных недоступна. Работа в автономном режиме.", 
-                      type = "warning", duration = 10)
+    # Проверяем, не была ли уже показана нотификация
+    if (!r$db_init_notified) {
+      init_success <- initialize_database_simple()
+      r$db_initialized <- init_success
+      
+      if (init_success && !r$db_init_notified) {
+        showNotification("База данных инициализирована успешно.", 
+                        type = "message", duration = 5)
+        r$db_init_notified <- TRUE
+        # Обновляем список сессий сразу после инициализации
+        update_session_list()
+      } else if (!init_success && !r$db_init_notified) {
+        showNotification("Внимание: База данных недоступна. Работа в автономном режиме.", 
+                        type = "warning", duration = 10)
+        r$db_init_notified <- TRUE
+      }
     }
   })
   
@@ -738,12 +739,6 @@ server = function(input, output, session) {
       r$sessions_updated <- r$sessions_updated + 1
     })
   }
-  
-  # ОБРАБОТЧИК КНОПКИ ОБНОВЛЕНИЯ СЕССИЙ
-  observeEvent(input$refresh_sessions, {
-    showNotification("Обновление списка сессий...", type = "message")
-    update_session_list()
-  })
   
   # Отладочная информация
   observeEvent(input$debug_sessions, {
