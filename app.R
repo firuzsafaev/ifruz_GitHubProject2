@@ -236,15 +236,15 @@ get_recent_sessions <- function() {
     query <- "
       SELECT DISTINCT session_id 
       FROM (
-        SELECT session_id, created_at FROM app_data_6120 
+        SELECT session_id, MAX(created_at) as created_at FROM app_data_6120 GROUP BY session_id
         UNION ALL
-        SELECT session_id, created_at FROM app_data_6120_1 
+        SELECT session_id, MAX(created_at) as created_at FROM app_data_6120_1 GROUP BY session_id
         UNION ALL  
-        SELECT session_id, created_at FROM app_data_6120_2
+        SELECT session_id, MAX(created_at) as created_at FROM app_data_6120_2 GROUP BY session_id
       ) AS all_sessions
       WHERE session_id IS NOT NULL AND session_id != ''
       ORDER BY created_at DESC
-      LIMIT 10
+      LIMIT 2
     "
     
     result <- dbGetQuery(conn, query)
@@ -482,6 +482,13 @@ ui <- fluidPage(
       .session-selector-container {
         margin-bottom: 15px;
       }
+      .session-management-buttons {
+        margin-top: 10px;
+      }
+      .session-management-buttons .btn {
+        margin-bottom: 5px;
+        width: 100%;
+      }
     "))
   ),
   
@@ -548,26 +555,31 @@ ui <- fluidPage(
                   )
                 ),
                 fluidRow(
-                  column(6, actionButton("load_session_btn", "Загрузить сессию", 
-                                       icon = icon("folder-open"), class = "btn-success", width = "100%")),
-                  column(6, actionButton("save_session_btn", "Сохранить текущую сессию", 
-                                       icon = icon("save"), class = "btn-warning", width = "100%")),
-                  column(12, actionButton("refresh_sessions_btn", "Обновить список сессий", 
-                                       icon = icon("refresh"), class = "btn-info", width = "100%",
-                                       style = "margin-top: 10px;"))
-                ),
-                fluidRow(
-                  column(12, 
-                    actionButton("debug_sessions", "Отладочная информация", 
-                               icon = icon("bug"), class = "btn-info", width = "100%",
-                               style = "margin-top: 10px;")
+                  column(12,
+                    div(class = "session-management-buttons",
+                      actionButton("load_session_btn", "Загрузить выбранную сессию", 
+                                 icon = icon("folder-open"), class = "btn-success"),
+                      actionButton("save_session_btn", "Сохранить текущую сессию", 
+                                 icon = icon("save"), class = "btn-warning"),
+                      actionButton("refresh_sessions_btn", "Обновить список сессий", 
+                                 icon = icon("refresh"), class = "btn-info"),
+                      actionButton("new_session_btn", "Создать новую сессию", 
+                                 icon = icon("plus"), class = "btn-primary"),
+                      actionButton("debug_sessions", "Отладочная информация", 
+                                 icon = icon("bug"), class = "btn-info")
+                    )
                   )
                 )
               ),
               br(),
               wellPanel(
                 h4("Текущая сессия"),
-                textOutput("current_session_info")
+                textOutput("current_session_info"),
+                br(),
+                textInput("session_name_input", "Имя для новой сессии:", 
+                         placeholder = "Введите имя сессии..."),
+                actionButton("rename_session_btn", "Переименовать текущую сессию", 
+                           icon = icon("edit"), class = "btn-info")
               )
             )
           )
@@ -656,12 +668,13 @@ server = function(input, output, session) {
   # Initialize reactive values
   r <- reactiveValues(
     db_initialized = FALSE,
-    db_initialization_attempted = FALSE,  # Флаг попытки инициализации
+    db_initialization_attempted = FALSE,
     show_loading = FALSE,
     start = ymd(Sys.Date()),
     end = ymd(Sys.Date()),
     session_list = character(0),
-    session_update_counter = 0
+    session_update_counter = 0,
+    current_session_name = "Новая сессия"
   )
   
   data <- reactiveValues(
@@ -680,7 +693,7 @@ server = function(input, output, session) {
   })
   outputOptions(output, "show_loading", suspendWhenHidden = FALSE)
   
-  # ИСПРАВЛЕННЫЙ ВЫБОР СЕССИЙ
+  # ИСПРАВЛЕННЫЙ ВЫБОР СЕССИЙ - теперь корректно отображает список
   output$session_selector_ui <- renderUI({
     # Зависимость от счетчика обновлений
     r$session_update_counter
@@ -688,20 +701,13 @@ server = function(input, output, session) {
     sessions <- r$session_list
     
     if (length(sessions) > 0) {
-      choices <- setNames(sessions, sessions)
-      choices <- c("Выберите сессию..." = "", choices)
-      selected <- if (!is.null(input$session_selector) && input$session_selector %in% sessions) {
-        input$session_selector
-      } else {
-        ""
-      }
+      choices <- c("Выберите сессию..." = "", sessions)
     } else {
       choices <- c("Нет доступных сессий" = "")
-      selected <- ""
     }
     
     selectInput("session_selector", "Выберите сессию для загрузки:", 
-                choices = choices, selected = selected, width = "100%")
+                choices = choices, selected = "", width = "100%")
   })
   
   # Initialize data
@@ -713,9 +719,8 @@ server = function(input, output, session) {
     data$df6120.2_2 <- copy(DF6120.2_2)
   })
   
-  # ИСПРАВЛЕННАЯ инициализация базы данных - выполняется только один раз
+  # ИСПРАВЛЕННАЯ инициализация базы данных
   observe({
-    # Проверяем, что инициализация еще не выполнялась
     if (!r$db_initialization_attempted) {
       r$db_initialization_attempted <- TRUE
       
@@ -742,10 +747,19 @@ server = function(input, output, session) {
       # Увеличиваем счетчик для принудительного обновления UI
       r$session_update_counter <- r$session_update_counter + 1
       message("Updated session list: ", paste(sessions, collapse = ", "))
+      
+      if (length(sessions) > 0) {
+        showNotification(paste("Найдено сессий:", length(sessions)), 
+                        type = "message", duration = 3)
+      } else {
+        showNotification("Сессии не найдены в базе данных", 
+                        type = "warning", duration = 3)
+      }
     }, error = function(e) {
       message("Error updating session list: ", e$message)
       r$session_list <- character(0)
       r$session_update_counter <- r$session_update_counter + 1
+      showNotification("Ошибка при загрузке списка сессий", type = "error")
     })
   }
   
@@ -755,10 +769,35 @@ server = function(input, output, session) {
     update_session_list()
   })
   
+  # Создание новой сессии
+  observeEvent(input$new_session_btn, {
+    new_id <- paste0("session_", as.integer(Sys.time()), "_", sample(1000:9999, 1))
+    session_id(new_id)
+    r$current_session_name <- paste("Новая сессия", format(Sys.time(), "%Y-%m-%d %H:%M"))
+    
+    # Сбрасываем данные
+    data$df6120 <- copy(DF6120)
+    data$df6120.1 <- copy(DF6120.1)
+    data$df6120.2 <- copy(DF6120.2)
+    
+    showNotification(paste("Создана новая сессия:", new_id), type = "message")
+  })
+  
+  # Переименование сессии
+  observeEvent(input$rename_session_btn, {
+    req(input$session_name_input)
+    if (nchar(trimws(input$session_name_input)) > 0) {
+      r$current_session_name <- trimws(input$session_name_input)
+      showNotification(paste("Сессия переименована в:", r$current_session_name), 
+                      type = "message")
+    }
+  })
+  
   # Отладочная информация
   observeEvent(input$debug_sessions, {
     message("=== DEBUG SESSION INFORMATION ===")
     message("Current session ID: ", session_id())
+    message("Current session name: ", r$current_session_name)
     message("Database initialized: ", r$db_initialized)
     message("Database initialization attempted: ", r$db_initialization_attempted)
     message("Sessions in list: ", paste(r$session_list, collapse = ", "))
@@ -773,10 +812,11 @@ server = function(input, output, session) {
       title = "Отладочная информация",
       text = paste(
         "Текущая сессия:", session_id(),
+        "\nИмя сессии:", r$current_session_name,
         "\nБаза инициализирована:", r$db_initialized,
         "\nПопытка инициализации:", r$db_initialization_attempted,
         "\nТест подключения:", conn_test,
-        "\nДоступные сессии:", paste(r$session_list, collapse = ", "),
+        "\nДоступные сессии:", if(length(r$session_list) > 0) paste(r$session_list, collapse = ", ") else "Нет сессий",
         "\nСчетчик обновлений:", r$session_update_counter,
         sep = "\n"
       ),
@@ -789,7 +829,7 @@ server = function(input, output, session) {
     req(input$session_selector, input$session_selector != "")
     
     selected_session <- input$session_selector
-    message("Attempting to load session: ", selected_session, " while keeping current session ID: ", session_id())
+    message("Attempting to load session: ", selected_session)
     
     r$show_loading <- TRUE
     
@@ -857,7 +897,10 @@ server = function(input, output, session) {
         }
       }
       
-      shinyalert("Успех", paste("Данные сессии загружены в текущую сессию:", session_id()), type = "success")
+      # Обновляем имя текущей сессии
+      r$current_session_name <- selected_session
+      
+      shinyalert("Успех", paste("Данные сессии загружены:", selected_session), type = "success")
       
     }, error = function(e) {
       message("ERROR in load session: ", e$message)
@@ -878,37 +921,43 @@ server = function(input, output, session) {
     save_success <- TRUE
     error_messages <- c()
     
-    if (!is.null(data$df6120)) {
-      success <- save_data_simple(data$df6120, "app_data_6120", current_session)
-      if (!success) {
-        save_success <- FALSE
-        error_messages <- c(error_messages, "Ошибка сохранения таблицы 6120")
-      }
-    }
+    r$show_loading <- TRUE
     
-    if (!is.null(data$df6120.1)) {
-      success <- save_data_simple(data$df6120.1, "app_data_6120_1", current_session)
-      if (!success) {
-        save_success <- FALSE
-        error_messages <- c(error_messages, "Ошибка сохранения таблицы 6120.1")
+    tryCatch({
+      if (!is.null(data$df6120) && nrow(data$df6120) > 0) {
+        success <- save_data_simple(data$df6120, "app_data_6120", current_session)
+        if (!success) {
+          save_success <- FALSE
+          error_messages <- c(error_messages, "Ошибка сохранения таблицы 6120")
+        }
       }
-    }
-    
-    if (!is.null(data$df6120.2)) {
-      success <- save_data_simple(data$df6120.2, "app_data_6120_2", current_session)
-      if (!success) {
-        save_success <- FALSE
-        error_messages <- c(error_messages, "Ошибка сохранения таблицы 6120.2")
+      
+      if (!is.null(data$df6120.1) && nrow(data$df6120.1) > 0) {
+        success <- save_data_simple(data$df6120.1, "app_data_6120_1", current_session)
+        if (!success) {
+          save_success <- FALSE
+          error_messages <- c(error_messages, "Ошибка сохранения таблицы 6120.1")
+        }
       }
-    }
-    
-    if (save_success) {
-      shinyalert("Успех", paste("Сессия сохранена:", current_session), type = "success")
-      update_session_list()
-    } else {
-      error_msg <- paste("Ошибка сохранения данных:", paste(error_messages, collapse = "; "))
-      shinyalert("Ошибка", error_msg, type = "error")
-    }
+      
+      if (!is.null(data$df6120.2) && nrow(data$df6120.2) > 0) {
+        success <- save_data_simple(data$df6120.2, "app_data_6120_2", current_session)
+        if (!success) {
+          save_success <- FALSE
+          error_messages <- c(error_messages, "Ошибка сохранения таблицы 6120.2")
+        }
+      }
+      
+      if (save_success) {
+        shinyalert("Успех", paste("Сессия сохранена:", current_session), type = "success")
+        update_session_list()
+      } else {
+        error_msg <- paste("Ошибка сохранения данных:", paste(error_messages, collapse = "; "))
+        shinyalert("Ошибка", error_msg, type = "error")
+      }
+    }, finally = {
+      r$show_loading <- FALSE
+    })
   })
   
   # Test connection
@@ -932,7 +981,7 @@ server = function(input, output, session) {
   })
   
   output$current_session_info <- renderText({
-    paste("ID текущей сессии:", session_id())
+    paste("ID текущей сессии:", session_id(), "\nИмя сессии:", r$current_session_name)
   })
   
   # Остальной код без изменений...
@@ -1277,7 +1326,7 @@ server = function(input, output, session) {
     req(data$df6120.2)
     
     if (nrow(data$df6120.2) > 0) {
-      data$df6120.2[, `Сальдо конечное` := `Сальдо начальное` + Кредит - Дебет]
+      data$df6120.2[, `Сальдо конечное` := `Сальдо начальное` + Кредит - Дебet]
     }
     
     hot <- rhandsontable(data$df6120.2, colWidths = 150, height = 300, allowInvalid = FALSE, 
